@@ -193,11 +193,12 @@ function connectSocket() {
     if (state.socket) state.socket.disconnect();
 
     state.socket = io({
-        transports: ["websocket", "polling"],
+        transports: ["polling", "websocket"],
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
-        timeout: 10000,
+        timeout: 20000,
+        forceNew: true,
     });
 
     state.socket.on("connect", () => {
@@ -830,7 +831,14 @@ $("#file-input").addEventListener("change", async (e) => {
 $("#message-form").addEventListener("submit", (e) => {
     e.preventDefault();
     const text = $("#message-input").value.trim();
-    if (!text || !state.activeChat || !state.socket?.connected) return;
+    if (!text || !state.activeChat) return;
+
+    // Socket not connected — try to reconnect and show error
+    if (!state.socket || !state.socket.connected) {
+        showToast("Connection lost. Reconnecting...", "error");
+        if (state.socket) state.socket.connect();
+        return;
+    }
 
     state.socket.emit("chat:send", {
         receiver_id: state.activeChat.user.id,
