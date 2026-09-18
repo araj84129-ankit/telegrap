@@ -21,9 +21,10 @@ const state = {
     localStream: null,
     pendingCandidates: [],
     reconnecting: false,
-    replyTo: null,          // { id, message, sender_name }
-    contextTarget: null,    // message id for context menu
-    editTarget: null,       // message id being edited
+    replyTo: null,
+    contextTarget: null,
+    editTarget: null,
+    messageQueue: [],       // offline hone par messages yahan queue hote hain
 };
 
 /* =========================================================
@@ -203,16 +204,30 @@ function connectSocket() {
 
     state.socket.on("connect", () => {
         state.reconnecting = false;
-        showToast("Connected", "success");
+        hideOfflineBar();
+        showToast("Connected ✓", "success");
         if (state.activeChat) markRead();
+
+        // Queue mein rakhe messages ab bhejo
+        if (state.messageQueue.length > 0) {
+            showToast(`Sending ${state.messageQueue.length} queued message(s)...`, "info");
+            const toSend = [...state.messageQueue];
+            state.messageQueue = [];
+            toSend.forEach((payload) => {
+                state.socket.emit("chat:send", payload);
+            });
+        }
     });
 
     state.socket.on("disconnect", () => {
         state.reconnecting = true;
-        showToast("Connection lost. Reconnecting...", "error");
+        showOfflineBar();
     });
 
-    state.socket.on("connect_error", () => { state.reconnecting = true; });
+    state.socket.on("connect_error", () => {
+        state.reconnecting = true;
+        showOfflineBar();
+    });
     state.socket.on("message:new", handleNewMessage);
     state.socket.on("message:status", handleMessageStatus);
     state.socket.on("message:deleted", handleMessageDeleted);
@@ -482,9 +497,10 @@ function renderMessages() {
         // Ticks
         let ticks = "";
         if (mine) {
-            if (msg.read_at) ticks = `<span class="ticks read">✓✓</span>`;
+            if (msg.pending)        ticks = `<span class="ticks pending">🕐</span>`;
+            else if (msg.read_at)   ticks = `<span class="ticks read">✓✓</span>`;
             else if (msg.delivered_at) ticks = `<span class="ticks">✓✓</span>`;
-            else ticks = `<span class="ticks">✓</span>`;
+            else                    ticks = `<span class="ticks">✓</span>`;
         }
 
         // Forward badge
@@ -826,6 +842,26 @@ $("#file-input").addEventListener("change", async (e) => {
 });
 
 /* =========================================================
+   OFFLINE STATUS BAR
+========================================================= */
+function showOfflineBar() {
+    let bar = $("#offline-bar");
+    if (!bar) {
+        bar = document.createElement("div");
+        bar.id = "offline-bar";
+        bar.className = "offline-bar";
+        bar.innerHTML = `<span class="offline-dot"></span> No internet · Messages will be sent when reconnected`;
+        document.body.appendChild(bar);
+    }
+    bar.classList.remove("hidden");
+}
+
+function hideOfflineBar() {
+    const bar = $("#offline-bar");
+    if (bar) bar.classList.add("hidden");
+}
+
+/* =========================================================
    SEND MESSAGE
 ========================================================= */
 $("#message-form").addEventListener("submit", (e) => {
@@ -833,18 +869,48 @@ $("#message-form").addEventListener("submit", (e) => {
     const text = $("#message-input").value.trim();
     if (!text || !state.activeChat) return;
 
-    // Socket not connected — try to reconnect and show error
-    if (!state.socket || !state.socket.connected) {
-        showToast("Connection lost. Reconnecting...", "error");
-        if (state.socket) state.socket.connect();
-        return;
-    }
-
-    state.socket.emit("chat:send", {
+    const payload = {
         receiver_id: state.activeChat.user.id,
         message: text,
         reply_to_id: state.replyTo?.id || null,
-    });
+    };
+
+    // Socket connected nahi — message queue mein daalo
+    if (!state.socket || !state.socket.connected) {
+        state.messageQueue.push(payload);
+
+        // UI mein pending message dikhao
+        const tempMsg = {
+            id: "temp_" + Date.now(),
+            conversation_id: state.activeChat.conversation_id,
+            sender_id: state.me.id,
+            receiver_id: state.activeChat.user.id,
+            message: text,
+            reply_to: state.replyTo ? { ...state.replyTo } : null,
+            created_at: new Date().toISOString(),
+            delivered_at: null,
+            read_at: null,
+            is_deleted: false,
+            is_edited: false,
+            is_pinned: false,
+            file_url: null,
+            file_type: null,
+            reactions: {},
+            pending: true,  // pending indicator
+        };
+
+        const list = state.messages.get(state.activeChat.conversation_id) || [];
+        list.push(tempMsg);
+        state.messages.set(state.activeChat.conversation_id, list);
+        renderMessages();
+
+        showToast("Offline — message queued ⏳", "info");
+
+        // Reconnect try karo
+        if (state.socket) state.socket.connect();
+    } else {
+        state.socket.emit("chat:send", payload);
+    }
 
     $("#message-input").value = "";
     state.replyTo = null;
@@ -880,10 +946,19 @@ function handleNewMessage(msg) {
     if (!chat) { loadChats(); return; }
 
     const list = state.messages.get(msg.conversation_id) || [];
-    if (!list.some((m) => m.id === msg.id)) {
+
+    // Pending (temp) message replace karo agar same text/receiver ho
+    const pendingIdx = list.findIndex(
+        (m) => m.pending &&
+               m.receiver_id === msg.receiver_id &&
+               m.message === msg.message
+    );
+    if (pendingIdx !== -1) {
+        list.splice(pendingIdx, 1, msg);
+    } else if (!list.some((m) => m.id === msg.id)) {
         list.push(msg);
-        state.messages.set(msg.conversation_id, list);
     }
+    state.messages.set(msg.conversation_id, list);
 
     chat.last_message = msg;
     if (msg.sender_id !== state.me.id && state.activeChat?.conversation_id !== msg.conversation_id) {
