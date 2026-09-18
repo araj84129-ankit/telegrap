@@ -3,28 +3,77 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
     <title>ChatWave - Real Time Chat</title>
-
-    <link rel="stylesheet"
-          href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 
 <body>
 
-<!-- =========================================================
-     TOAST NOTIFICATIONS
-========================================================= -->
-
+<!-- TOAST -->
 <div id="toast-container"></div>
+
+<!-- =========================================================
+     CONTEXT MENU (right-click on message)
+========================================================= -->
+<div id="context-menu" class="context-menu hidden">
+    <button data-action="reply">↩ Reply</button>
+    <button data-action="copy">📋 Copy</button>
+    <button data-action="edit">✏️ Edit</button>
+    <button data-action="pin">📌 Pin / Unpin</button>
+    <button data-action="forward">↗ Forward</button>
+    <button data-action="delete" class="danger">🗑 Delete</button>
+</div>
+
+<!-- =========================================================
+     EMOJI PICKER PANEL
+========================================================= -->
+<div id="emoji-panel" class="emoji-panel hidden">
+    <span data-emoji="👍">👍</span>
+    <span data-emoji="❤️">❤️</span>
+    <span data-emoji="😂">😂</span>
+    <span data-emoji="😮">😮</span>
+    <span data-emoji="😢">😢</span>
+    <span data-emoji="🔥">🔥</span>
+    <span data-emoji="🎉">🎉</span>
+    <span data-emoji="👏">👏</span>
+    <span data-emoji="🙏">🙏</span>
+    <span data-emoji="💯">💯</span>
+</div>
+
+<!-- =========================================================
+     FORWARD MODAL
+========================================================= -->
+<div id="forward-modal" class="modal hidden">
+    <div class="modal-card">
+        <div class="modal-head">
+            <h3>Forward to…</h3>
+            <button class="close-btn" data-close="forward-modal">×</button>
+        </div>
+        <div id="forward-chat-list" class="forward-list"></div>
+    </div>
+</div>
+
+<!-- =========================================================
+     EDIT MESSAGE MODAL
+========================================================= -->
+<div id="edit-modal" class="modal hidden">
+    <div class="modal-card">
+        <div class="modal-head">
+            <h3>Edit message</h3>
+            <button class="close-btn" data-close="edit-modal">×</button>
+        </div>
+        <form id="edit-form">
+            <textarea id="edit-text" maxlength="5000" rows="4"></textarea>
+            <button class="primary-btn" type="submit">Save</button>
+        </form>
+    </div>
+</div>
 
 
 <!-- =========================================================
      LOGIN / REGISTER
 ========================================================= -->
-
 <section id="auth-view" class="auth-view">
-
     <div class="auth-card">
 
         <div class="brand large">
@@ -32,586 +81,221 @@
             ChatWave
         </div>
 
-        <p class="muted">
-            Private real-time chat, voice and video calls.
-        </p>
-
-
-        <!-- AUTH TABS -->
+        <p class="muted">Private real-time chat, voice and video calls.</p>
 
         <div class="auth-tabs">
-
-            <button
-                class="tab active"
-                data-auth-tab="login">
-                Login
-            </button>
-
-            <button
-                class="tab"
-                data-auth-tab="register">
-                Create account
-            </button>
-
+            <button class="tab active" data-auth-tab="login">Login</button>
+            <button class="tab" data-auth-tab="register">Create account</button>
         </div>
 
-
         <!-- LOGIN -->
-
         <form id="login-form" class="auth-form">
-
             <label>
                 Email or mobile
-
-                <input
-                    id="login-identifier"
-                    required
-                    autocomplete="username"
-                    placeholder="Email or mobile">
+                <input id="login-identifier" required autocomplete="username" placeholder="Email or mobile">
             </label>
-
-
             <label>
                 Password
-
-                <input
-                    id="login-password"
-                    required
-                    type="password"
-                    autocomplete="current-password"
-                    placeholder="Password">
+                <input id="login-password" required type="password" autocomplete="current-password" placeholder="Password">
             </label>
-
-
-            <button
-                class="primary-btn"
-                type="submit">
-                Login
-            </button>
-
+            <button class="primary-btn" type="submit">Login</button>
         </form>
 
-
         <!-- REGISTER -->
-
-        <form
-            id="register-form"
-            class="auth-form hidden">
-
+        <form id="register-form" class="auth-form hidden">
             <label>
                 Username
-
-                <input
-                    id="reg-username"
-                    required
-                    maxlength="30"
-                    placeholder="Ankit123">
-
-                <small>
-                    3-30 characters:
-                    letters, numbers, _ or .
-                    Username is case-insensitive unique.
-                </small>
+                <input id="reg-username" required maxlength="30" placeholder="Ankit123">
+                <small>3-30 characters: letters, numbers, _ or .  Username is case-insensitive unique.</small>
             </label>
-
-
             <label>
                 Display name
-
-                <input
-                    id="reg-display-name"
-                    required
-                    maxlength="80"
-                    placeholder="Your name">
+                <input id="reg-display-name" required maxlength="80" placeholder="Your name">
             </label>
-
-
             <div class="two-col">
-
                 <label>
                     Email
-
-                    <input
-                        id="reg-email"
-                        type="email"
-                        placeholder="you@example.com">
+                    <input id="reg-email" type="email" placeholder="you@example.com">
                 </label>
-
-
                 <label>
                     Mobile
-
-                    <input
-                        id="reg-phone"
-                        placeholder="+919876543210">
+                    <input id="reg-phone" placeholder="+919876543210">
                 </label>
-
             </div>
-
-
-            <small>
-                Enter at least one: email or mobile.
-            </small>
-
-
+            <small>Enter at least one: email or mobile.</small>
             <label>
                 Password
-
-                <input
-                    id="reg-password"
-                    required
-                    type="password"
-                    minlength="8"
-                    autocomplete="new-password"
-                    placeholder="Minimum 8 characters">
+                <input id="reg-password" required type="password" minlength="8" autocomplete="new-password" placeholder="Minimum 8 characters">
             </label>
-
-
-            <button
-                class="primary-btn"
-                type="submit">
-                Create account
-            </button>
-
+            <button class="primary-btn" type="submit">Create account</button>
         </form>
 
     </div>
-
 </section>
-
 
 
 <!-- =========================================================
      MAIN APPLICATION
 ========================================================= -->
-
 <section id="app-view" class="app-view hidden">
 
-
-    <!-- =====================================================
-         LEFT SIDEBAR
-    ====================================================== -->
-
+    <!-- SIDEBAR -->
     <aside class="sidebar">
 
-
-        <!-- SIDEBAR HEADER -->
-
         <header class="sidebar-header">
-
             <div class="brand">
-
-                <span class="brand-icon">
-                    ✦
-                </span>
-
+                <span class="brand-icon">✦</span>
                 ChatWave
-
             </div>
-
-
             <div class="header-actions">
-
-                <button
-                    id="profile-btn"
-                    class="icon-btn"
-                    title="Profile">
-                    ⚙
-                </button>
-
-
-                <button
-                    id="logout-btn"
-                    class="icon-btn"
-                    title="Logout">
-                    ↪
-                </button>
-
+                <button id="profile-btn" class="icon-btn" title="Profile">⚙</button>
+                <button id="logout-btn" class="icon-btn" title="Logout">↪</button>
             </div>
-
         </header>
 
-
-
-        <!-- SEARCH -->
-
         <div class="search-box">
-
             <span>⌕</span>
-
-            <input
-                id="user-search"
-                autocomplete="off"
-                placeholder="Search by username">
-
+            <input id="user-search" autocomplete="off" placeholder="Search by username">
         </div>
 
-
-        <!-- SEARCH RESULTS -->
-
-        <div
-            id="search-results"
-            class="search-results hidden">
-        </div>
-
-
-        <!-- CHAT LIST -->
-
-        <div
-            id="chat-list"
-            class="chat-list">
-        </div>
+        <div id="search-results" class="search-results hidden"></div>
+        <div id="chat-list" class="chat-list"></div>
 
     </aside>
 
-
-
-    <!-- =====================================================
-         CHAT PANEL
-    ====================================================== -->
-
+    <!-- CHAT PANEL -->
     <main class="chat-panel">
 
-
-        <!-- EMPTY CHAT -->
-
-        <div
-            id="empty-chat"
-            class="empty-chat">
-
-            <div class="empty-icon">
-                ✦
-            </div>
-
-            <h2>
-                Your messages
-            </h2>
-
-            <p>
-                Search a unique username to start
-                a private conversation.
-            </p>
-
+        <div id="empty-chat" class="empty-chat">
+            <div class="empty-icon">✦</div>
+            <h2>Your messages</h2>
+            <p>Search a unique username to start a private conversation.</p>
         </div>
 
-
-
-        <!-- ACTIVE CHAT -->
-
-        <div
-            id="active-chat"
-            class="active-chat hidden">
-
+        <div id="active-chat" class="active-chat hidden">
 
             <!-- CHAT HEADER -->
-
             <header class="chat-header">
-
-
                 <div class="person">
-
-
-                    <!-- MOBILE BACK -->
-
-                    <button
-                        id="back-chat-btn"
-                        class="mobile-back-btn"
-                        title="Back">
-                        ←
-                    </button>
-
-
-                    <img
-                        id="chat-avatar"
-                        class="avatar"
-                        alt="Profile photo">
-
-
+                    <button id="back-chat-btn" class="mobile-back-btn" title="Back">←</button>
+                    <img id="chat-avatar" class="avatar" alt="Profile photo">
                     <div>
-
-                        <strong
-                            id="chat-name">
-                        </strong>
-
-
-                        <div
-                            id="chat-presence"
-                            class="presence">
-                        </div>
-
+                        <strong id="chat-name"></strong>
+                        <div id="chat-presence" class="presence"></div>
                     </div>
-
                 </div>
-
-
-                <!-- CALL BUTTONS -->
-
                 <div class="call-actions">
-
-                    <button
-                        id="voice-call-btn"
-                        class="icon-btn"
-                        title="Voice call">
-                        ☎
-                    </button>
-
-
-                    <button
-                        id="video-call-btn"
-                        class="icon-btn"
-                        title="Video call">
-                        ▣
-                    </button>
-
+                    <button id="pin-view-btn" class="icon-btn" title="Pinned messages">📌</button>
+                    <button id="voice-call-btn" class="icon-btn" title="Voice call">☎</button>
+                    <button id="video-call-btn" class="icon-btn" title="Video call">▣</button>
                 </div>
-
             </header>
 
-
+            <!-- PINNED MESSAGE BAR -->
+            <div id="pinned-bar" class="pinned-bar hidden">
+                <span class="pin-icon">📌</span>
+                <span id="pinned-text" class="pinned-text">Pinned message</span>
+                <button id="pinned-close" class="pin-close-btn">×</button>
+            </div>
 
             <!-- MESSAGES -->
-
-            <div
-                id="messages"
-                class="messages">
-            </div>
-
+            <div id="messages" class="messages"></div>
 
             <!-- TYPING -->
+            <div id="typing-bar" class="typing-bar hidden">typing…</div>
 
-            <div
-                id="typing-bar"
-                class="typing-bar hidden">
-                typing…
+            <!-- REPLY PREVIEW BAR -->
+            <div id="reply-bar" class="reply-bar hidden">
+                <div class="reply-bar-inner">
+                    <div class="reply-bar-line"></div>
+                    <div>
+                        <div class="reply-bar-name" id="reply-bar-name"></div>
+                        <div class="reply-bar-text" id="reply-bar-text"></div>
+                    </div>
+                </div>
+                <button id="cancel-reply" class="cancel-reply-btn">×</button>
             </div>
 
-
-
             <!-- MESSAGE INPUT -->
+            <form id="message-form" class="message-form">
 
-            <form
-                id="message-form"
-                class="message-form">
+                <!-- File upload button -->
+                <label class="attach-btn" title="Attach file">
+                    📎
+                    <input id="file-input" type="file" accept="image/*,video/*,.pdf,.doc,.docx,.zip,.txt" hidden>
+                </label>
 
+                <input id="message-input" autocomplete="off" maxlength="5000" placeholder="Type a message…">
 
-                <input
-                    id="message-input"
-                    autocomplete="off"
-                    maxlength="5000"
-                    placeholder="Type a message…">
+                <!-- Emoji reaction trigger -->
+                <button type="button" id="emoji-btn" class="emoji-trigger-btn" title="Emoji">😊</button>
 
-
-                <button
-                    class="send-btn"
-                    type="submit">
-                    ➤
-                </button>
-
+                <button class="send-btn" type="submit">➤</button>
             </form>
 
         </div>
-
     </main>
 
 </section>
 
 
-
 <!-- =========================================================
      PROFILE MODAL
 ========================================================= -->
-
-<div
-    id="profile-modal"
-    class="modal hidden">
-
+<div id="profile-modal" class="modal hidden">
     <div class="modal-card">
-
-
         <div class="modal-head">
-
-            <h3>
-                My profile
-            </h3>
-
-
-            <button
-                class="close-btn"
-                data-close="profile-modal">
-                ×
-            </button>
-
+            <h3>My profile</h3>
+            <button class="close-btn" data-close="profile-modal">×</button>
         </div>
-
-
-
         <form id="profile-form">
-
-
             <div class="profile-preview">
-
-                <img
-                    id="profile-preview-img"
-                    class="avatar big"
-                    alt="Profile photo">
-
-
+                <img id="profile-preview-img" class="avatar big" alt="Profile photo">
                 <div>
-
-                    <strong
-                        id="profile-username">
-                    </strong>
-
-
-                    <div class="muted">
-                        Username cannot be changed.
-                    </div>
-
+                    <strong id="profile-username"></strong>
+                    <div class="muted">Username cannot be changed.</div>
                 </div>
-
             </div>
-
-
-
             <label>
                 Display name
-
-                <input
-                    id="profile-display-name"
-                    maxlength="80"
-                    required>
+                <input id="profile-display-name" maxlength="80" required>
             </label>
-
-
             <label>
                 Profile photo
-
-                <input
-                    id="profile-photo"
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp,image/gif">
+                <input id="profile-photo" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
             </label>
-
-
-            <button
-                class="primary-btn"
-                type="submit">
-                Save profile
-            </button>
-
+            <button class="primary-btn" type="submit">Save profile</button>
         </form>
-
     </div>
-
 </div>
-
 
 
 <!-- =========================================================
      CALL MODAL
 ========================================================= -->
-
-<div
-    id="call-modal"
-    class="call-modal hidden">
-
+<div id="call-modal" class="call-modal hidden">
     <div class="call-card">
-
-
-        <img
-            id="call-avatar"
-            class="avatar huge"
-            alt="Caller photo">
-
-
-        <h2
-            id="call-name">
-        </h2>
-
-
-        <p
-            id="call-status">
-            Calling…
-        </p>
-
-
-
-        <!-- VIDEO -->
-
-        <div
-            id="remote-video-wrap"
-            class="remote-video-wrap hidden">
-
-
-            <video
-                id="remote-video"
-                autoplay
-                playsinline>
-            </video>
-
-
-            <video
-                id="local-video"
-                autoplay
-                muted
-                playsinline>
-            </video>
-
+        <img id="call-avatar" class="avatar huge" alt="Caller photo">
+        <h2 id="call-name"></h2>
+        <p id="call-status">Calling…</p>
+        <div id="remote-video-wrap" class="remote-video-wrap hidden">
+            <video id="remote-video" autoplay playsinline></video>
+            <video id="local-video" autoplay muted playsinline></video>
         </div>
-
-
-
-        <!-- CALL BUTTONS -->
-
         <div class="call-buttons">
-
-
-            <button
-                id="accept-call"
-                class="accept-btn hidden">
-                Accept
-            </button>
-
-
-            <button
-                id="reject-call"
-                class="danger-btn hidden">
-                Reject
-            </button>
-
-
-            <button
-                id="end-call"
-                class="danger-btn hidden">
-                End call
-            </button>
-
+            <button id="accept-call" class="accept-btn hidden">Accept</button>
+            <button id="reject-call" class="danger-btn hidden">Reject</button>
+            <button id="end-call" class="danger-btn hidden">End call</button>
         </div>
-
     </div>
-
 </div>
 
 
-
-<!-- =========================================================
-     SOCKET.IO
-========================================================= -->
-
+<!-- SOCKET.IO -->
 <script src="/socket.io/socket.io.js"></script>
 
-
-<!-- =========================================================
-     APPLICATION JAVASCRIPT
-========================================================= -->
-
-<script
-    src="{{ url_for('static', filename='js/app.js') }}">
-</script>
+<!-- APPLICATION JS -->
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
 
 </body>
 </html>
-
-
-
-
