@@ -16,6 +16,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 # ============================================================
@@ -29,23 +30,27 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
+# Render / production ke liye ProxyFix - HTTPS detection ke liye zaroori
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
 app.config["SECRET_KEY"] = os.environ.get(
     "SECRET_KEY",
     "chatwave-super-secret-key-2024-xyz"
 )
 
-# Session cookie settings - important for login to work
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# HTTPS detect karo - Render par hamesha HTTPS hota hai
+IS_PRODUCTION = os.environ.get("RENDER") or os.environ.get("IS_PRODUCTION")
+
+app.config["SESSION_COOKIE_SAMESITE"] = "None" if IS_PRODUCTION else "Lax"
+app.config["SESSION_COOKIE_SECURE"]   = bool(IS_PRODUCTION)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SECURE"] = False  # True only in HTTPS/production
+app.config["SESSION_COOKIE_NAME"]     = "telegrav_session"
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = (
     "sqlite:///" + os.path.join(BASE_DIR, "chatwave.db")
 )
-
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
 app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
 
 db = SQLAlchemy(app)
@@ -53,7 +58,9 @@ db = SQLAlchemy(app)
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
-    async_mode="threading",
+    async_mode="eventlet" if IS_PRODUCTION else "threading",
+    logger=False,
+    engineio_logger=False,
 )
 
 
@@ -119,7 +126,10 @@ def valid_phone(phone):
 
 
 def current_user():
-    user_id = session.get("user_id")
+    try:
+        user_id = session.get("user_id")
+    except Exception:
+        user_id = None
 
     if not user_id:
         return None
