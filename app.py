@@ -1,7 +1,7 @@
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 
 from flask import (
@@ -31,8 +31,14 @@ app = Flask(__name__)
 
 app.config["SECRET_KEY"] = os.environ.get(
     "SECRET_KEY",
-    "change-this-secret-key-in-production"
+    "chatwave-super-secret-key-2024-xyz"
 )
+
+# Session cookie settings - important for login to work
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SECURE"] = False  # True only in HTTPS/production
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = (
     "sqlite:///" + os.path.join(BASE_DIR, "chatwave.db")
@@ -48,6 +54,7 @@ socketio = SocketIO(
     app,
     cors_allowed_origins="*",
     async_mode="threading",
+    manage_session=False,
 )
 
 
@@ -519,6 +526,7 @@ def register():
     db.session.commit()
 
     session.clear()
+    session.permanent = True
     session["user_id"] = user.id
 
     return jsonify({
@@ -570,6 +578,7 @@ def login():
     db.session.commit()
 
     session.clear()
+    session.permanent = True
     session["user_id"] = user.id
 
     return jsonify({
@@ -963,7 +972,8 @@ def socket_connect():
     user = current_user()
 
     if not user:
-        return False
+        emit("server:error", {"error": "Login required."})
+        return  # allow connection, JS will handle redirect
 
     sid = request.sid
 
