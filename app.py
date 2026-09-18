@@ -612,41 +612,32 @@ def login():
 
     data = request.get_json(silent=True) or {}
 
-    identifier = data.get(
-        "identifier",
-        ""
-    ).strip()
-
-    password = data.get(
-        "password",
-        ""
-    )
+    identifier = data.get("identifier", "").strip()
+    password   = data.get("password", "")
 
     if not identifier or not password:
         return jsonify({
-            "error": "Email/mobile and password are required."
+            "error": "Email/mobile/username and password are required."
         }), 400
 
     normalized = identifier.lower()
 
+    # Try email, phone, OR username
     user = User.query.filter(
         db.or_(
-            User.email == normalized,
-            User.phone == normalize_phone(identifier),
+            User.email    == normalized,
+            User.phone    == normalize_phone(identifier),
+            User.username == normalized,
         )
     ).first()
 
-    if not user or not check_password_hash(
-        user.password_hash,
-        password
-    ):
+    if not user or not check_password_hash(user.password_hash, password):
         return jsonify({
             "error": "Invalid login details."
         }), 401
 
     user.online_status = True
     user.last_seen = utc_now()
-
     db.session.commit()
 
     session.clear()
