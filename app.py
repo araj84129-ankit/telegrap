@@ -1,3 +1,4 @@
+```python
 import os
 import re
 import uuid
@@ -24,33 +25,52 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 # ============================================================
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
-# Render / production ke liye ProxyFix - HTTPS detection ke liye zaroori
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
-
-app.config["SECRET_KEY"] = os.environ.get(
-    "SECRET_KEY",
-    "chatwave-super-secret-key-2024-xyz"
+# Render / reverse proxy support
+app.wsgi_app = ProxyFix(
+    app.wsgi_app,
+    x_for=1,
+    x_proto=1,
+    x_host=1,
+    x_prefix=1,
 )
 
-# HTTPS detect karo - Render par hamesha HTTPS hota hai
-IS_PRODUCTION = os.environ.get("RENDER") or os.environ.get("IS_PRODUCTION")
+# IMPORTANT:
+# Production me SECRET_KEY environment variable me set karo.
+app.config["SECRET_KEY"] = os.environ.get(
+    "SECRET_KEY",
+    "change-this-secret-key-in-production",
+)
 
-app.config["SESSION_COOKIE_SAMESITE"] = "None" if IS_PRODUCTION else "Lax"
-app.config["SESSION_COOKIE_SECURE"]   = bool(IS_PRODUCTION)
+# Render normally provides RENDER=true.
+IS_PRODUCTION = str(
+    os.environ.get("RENDER")
+    or os.environ.get("IS_PRODUCTION")
+    or ""
+).lower() in {"1", "true", "yes", "on"}
+
+app.config["SESSION_COOKIE_SAMESITE"] = (
+    "None" if IS_PRODUCTION else "Lax"
+)
+
+app.config["SESSION_COOKIE_SECURE"] = IS_PRODUCTION
 app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_NAME"]     = "telegrav_session"
+app.config["SESSION_COOKIE_NAME"] = "telegrav_session"
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
+# SQLite
 app.config["SQLALCHEMY_DATABASE_URI"] = (
     "sqlite:///" + os.path.join(BASE_DIR, "chatwave.db")
 )
+
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+# Maximum request/file size = 5 MB
 app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
 
 db = SQLAlchemy(app)
@@ -68,7 +88,7 @@ socketio = SocketIO(
 # GLOBAL STATE
 # ============================================================
 
-# user_id -> socket session IDs
+# user_id -> set(socket session IDs)
 connected_users = {}
 
 
@@ -87,15 +107,15 @@ def iso_time(value):
 
 
 def normalize_username(value):
-    return value.strip().lower()
+    return str(value or "").strip().lower()
 
 
 def normalize_email(value):
-    return value.strip().lower()
+    return str(value or "").strip().lower()
 
 
 def normalize_phone(value):
-    return re.sub(r"[^\d+]", "", value.strip())
+    return re.sub(r"[^\d+]", "", str(value or "").strip())
 
 
 def valid_username(username):
@@ -108,10 +128,11 @@ def valid_email(email):
     if not email:
         return True
 
+    # Fixed email regex
     return bool(
         re.fullmatch(
             r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
-            email
+            email,
         )
     )
 
@@ -143,7 +164,9 @@ def login_required(fn):
         user = current_user()
 
         if not user:
-            return jsonify({"error": "Login required."}), 401
+            return jsonify({
+                "error": "Login required."
+            }), 401
 
         return fn(*args, **kwargs)
 
@@ -161,12 +184,6 @@ def user_public(user):
     }
 
 
-def conversation_key(user_a, user_b):
-    a = min(user_a, user_b)
-    b = max(user_a, user_b)
-    return f"{a}:{b}"
-
-
 def room_for_user(user_id):
     return f"user:{user_id}"
 
@@ -175,55 +192,56 @@ def conversation_room(conversation_id):
     return f"conversation:{conversation_id}"
 
 
-def message_public(message, include_reactions=True):
-    # Fetch reply-to snippet
-    reply_to = None
-    if message.reply_to_id:
-        parent = db.session.get(Message, message.reply_to_id)
-        if parent:
-            sender = db.session.get(User, parent.sender_id)
-            reply_to = {
-                "id": parent.id,
-                "message": parent.message if not parent.is_deleted else "🗑 Deleted message",
-                "sender_name": sender.display_name if sender else "Unknown",
-                "file_url": parent.file_url,
-                "file_type": parent.file_type,
-            }
+def conversation_has_user(conversation, user_id):
+    if not conversation:
+        return False
 
-    # Fetch reactions
-    reactions = {}
-    if include_reactions:
-        rows = Reaction.query.filter_by(message_id=message.id).all()
-        for r in rows:
-            reactions[r.emoji] = reactions.get(r.emoji, 0) + 1
+    return user_id in (
+        conversation.user_one_id,
+        conversation.user_two_id,
+    )
 
-    # Forward sender name
-    forwarded_from = None
-    if message.forwarded_from_id:
-        fwd_user = db.session.get(User, message.forwarded_from_id)
-        if fwd_user:
-            forwarded_from = fwd_user.display_name
 
-    return {
-        "id": message.id,
-        "conversation_id": message.conversation_id,
-        "sender_id": message.sender_id,
-        "receiver_id": message.receiver_id,
-        "message": "🗑 This message was deleted" if message.is_deleted else message.message,
-        "is_deleted": message.is_deleted,
-        "is_edited": message.is_edited,
-        "edited_at": iso_time(message.edited_at),
-        "is_pinned": message.is_pinned,
-        "reply_to": reply_to,
-        "forwarded_from": forwarded_from,
-        "file_url": message.file_url,
-        "file_name": message.file_name,
-        "file_type": message.file_type,
-        "reactions": reactions,
-        "created_at": iso_time(message.created_at),
-        "delivered_at": iso_time(message.delivered_at),
-        "read_at": iso_time(message.read_at),
-    }
+def other_user(conversation, user_id):
+    if not conversation:
+        return None
+
+    if conversation.user_one_id == user_id:
+        return db.session.get(
+            User,
+            conversation.user_two_id,
+        )
+
+    return db.session.get(
+        User,
+        conversation.user_one_id,
+    )
+
+
+def emit_to_user(user_id, event, data):
+    socket_ids = connected_users.get(
+        user_id,
+        set(),
+    )
+
+    for sid in list(socket_ids):
+        socketio.emit(
+            event,
+            data,
+            to=sid,
+        )
+
+
+def remove_socket_for_user(user_id, sid):
+    sockets = connected_users.get(user_id)
+
+    if not sockets:
+        return
+
+    sockets.discard(sid)
+
+    if not sockets:
+        connected_users.pop(user_id, None)
 
 
 def get_or_create_conversation(user_a, user_b):
@@ -232,7 +250,10 @@ def get_or_create_conversation(user_a, user_b):
 
     conversation = (
         Conversation.query
-        .filter_by(user_one_id=low, user_two_id=high)
+        .filter_by(
+            user_one_id=low,
+            user_two_id=high,
+        )
         .first()
     )
 
@@ -244,30 +265,145 @@ def get_or_create_conversation(user_a, user_b):
         )
 
         db.session.add(conversation)
-        db.session.commit()
+
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+            conversation = (
+                Conversation.query
+                .filter_by(
+                    user_one_id=low,
+                    user_two_id=high,
+                )
+                .first()
+            )
+
+            if not conversation:
+                raise
 
     return conversation
 
 
-def conversation_has_user(conversation, user_id):
+def get_call(call_id):
+    try:
+        return db.session.get(
+            Call,
+            int(call_id),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def call_has_user(call, user_id):
+    if not call:
+        return False
+
     return user_id in (
-        conversation.user_one_id,
-        conversation.user_two_id,
+        call.caller_id,
+        call.receiver_id,
     )
 
 
-def other_user(conversation, user_id):
-    if conversation.user_one_id == user_id:
-        return db.session.get(User, conversation.user_two_id)
+def call_other_user_id(call, user_id):
+    if call.caller_id == user_id:
+        return call.receiver_id
 
-    return db.session.get(User, conversation.user_one_id)
+    return call.caller_id
 
 
-def emit_to_user(user_id, event, data):
-    socket_ids = connected_users.get(user_id, set())
+def message_public(message, include_reactions=True):
+    reply_to = None
 
-    for sid in list(socket_ids):
-        socketio.emit(event, data, to=sid)
+    if message.reply_to_id:
+        parent = db.session.get(
+            Message,
+            message.reply_to_id,
+        )
+
+        # Only expose reply information if it belongs
+        # to the same conversation.
+        if (
+            parent
+            and parent.conversation_id == message.conversation_id
+        ):
+            sender = db.session.get(
+                User,
+                parent.sender_id,
+            )
+
+            reply_to = {
+                "id": parent.id,
+                "message": (
+                    "🗑 Deleted message"
+                    if parent.is_deleted
+                    else parent.message
+                ),
+                "sender_name": (
+                    sender.display_name
+                    if sender
+                    else "Unknown"
+                ),
+                "file_url": parent.file_url,
+                "file_type": parent.file_type,
+            }
+
+    reactions = {}
+
+    if include_reactions:
+        rows = (
+            Reaction.query
+            .filter_by(message_id=message.id)
+            .all()
+        )
+
+        for reaction in rows:
+            reactions[reaction.emoji] = (
+                reactions.get(reaction.emoji, 0) + 1
+            )
+
+    forwarded_from = None
+
+    if message.forwarded_from_id:
+        forwarded_user = db.session.get(
+            User,
+            message.forwarded_from_id,
+        )
+
+        if forwarded_user:
+            forwarded_from = forwarded_user.display_name
+
+    return {
+        "id": message.id,
+        "conversation_id": message.conversation_id,
+        "sender_id": message.sender_id,
+        "receiver_id": message.receiver_id,
+
+        "message": (
+            "🗑 This message was deleted"
+            if message.is_deleted
+            else message.message
+        ),
+
+        "is_deleted": message.is_deleted,
+        "is_edited": message.is_edited,
+        "edited_at": iso_time(message.edited_at),
+        "is_pinned": message.is_pinned,
+
+        "reply_to": reply_to,
+        "forwarded_from": forwarded_from,
+
+        "file_url": message.file_url,
+        "file_name": message.file_name,
+        "file_type": message.file_type,
+
+        "reactions": reactions,
+
+        "created_at": iso_time(message.created_at),
+        "delivered_at": iso_time(message.delivered_at),
+        "read_at": iso_time(message.read_at),
+    }
 
 
 # ============================================================
@@ -277,7 +413,10 @@ def emit_to_user(user_id, event, data):
 class User(db.Model):
     __tablename__ = "users"
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(
+        db.Integer,
+        primary_key=True,
+    )
 
     username = db.Column(
         db.String(30),
@@ -371,7 +510,10 @@ class Conversation(db.Model):
 class Message(db.Model):
     __tablename__ = "messages"
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(
+        db.Integer,
+        primary_key=True,
+    )
 
     conversation_id = db.Column(
         db.Integer,
@@ -392,42 +534,86 @@ class Message(db.Model):
         nullable=False,
     )
 
-    message = db.Column(db.Text, nullable=False)
+    message = db.Column(
+        db.Text,
+        nullable=False,
+    )
 
-    # Reply to another message
     reply_to_id = db.Column(
         db.Integer,
         db.ForeignKey("messages.id"),
         nullable=True,
     )
 
-    # Edit/delete/pin flags
-    is_deleted = db.Column(db.Boolean, default=False, nullable=False)
-    is_edited  = db.Column(db.Boolean, default=False, nullable=False)
-    edited_at  = db.Column(db.DateTime, nullable=True)
-    is_pinned  = db.Column(db.Boolean, default=False, nullable=False)
+    is_deleted = db.Column(
+        db.Boolean,
+        default=False,
+        nullable=False,
+    )
 
-    # Forward
+    is_edited = db.Column(
+        db.Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    edited_at = db.Column(
+        db.DateTime,
+        nullable=True,
+    )
+
+    is_pinned = db.Column(
+        db.Boolean,
+        default=False,
+        nullable=False,
+    )
+
     forwarded_from_id = db.Column(
         db.Integer,
         db.ForeignKey("users.id"),
         nullable=True,
     )
 
-    # File / image attachment
-    file_url  = db.Column(db.String(500), nullable=True)
-    file_name = db.Column(db.String(255), nullable=True)
-    file_type = db.Column(db.String(50),  nullable=True)
+    file_url = db.Column(
+        db.String(500),
+        nullable=True,
+    )
 
-    created_at   = db.Column(db.DateTime, default=utc_now, nullable=False, index=True)
-    delivered_at = db.Column(db.DateTime, nullable=True)
-    read_at      = db.Column(db.DateTime, nullable=True)
+    file_name = db.Column(
+        db.String(255),
+        nullable=True,
+    )
+
+    file_type = db.Column(
+        db.String(50),
+        nullable=True,
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=utc_now,
+        nullable=False,
+        index=True,
+    )
+
+    delivered_at = db.Column(
+        db.DateTime,
+        nullable=True,
+    )
+
+    read_at = db.Column(
+        db.DateTime,
+        nullable=True,
+    )
 
 
 class Reaction(db.Model):
     __tablename__ = "reactions"
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(
+        db.Integer,
+        primary_key=True,
+    )
 
     message_id = db.Column(
         db.Integer,
@@ -442,11 +628,15 @@ class Reaction(db.Model):
         nullable=False,
     )
 
-    emoji = db.Column(db.String(10), nullable=False)
+    emoji = db.Column(
+        db.String(10),
+        nullable=False,
+    )
 
     __table_args__ = (
         db.UniqueConstraint(
-            "message_id", "user_id",
+            "message_id",
+            "user_id",
             name="unique_reaction_per_user",
         ),
     )
@@ -517,16 +707,14 @@ def index():
 
 @app.post("/api/register")
 def register():
-
     data = request.get_json(silent=True) or {}
 
     username = normalize_username(
         data.get("username", "")
     )
 
-    display_name = data.get(
-        "display_name",
-        ""
+    display_name = str(
+        data.get("display_name", "")
     ).strip()
 
     email = normalize_email(
@@ -537,14 +725,16 @@ def register():
         data.get("phone", "")
     )
 
-    password = data.get(
-        "password",
-        ""
+    password = str(
+        data.get("password", "")
     )
 
     if not valid_username(username):
         return jsonify({
-            "error": "Username must contain 3-30 letters, numbers, _ or ."
+            "error": (
+                "Username must contain 3-30 letters, "
+                "numbers, _ or ."
+            )
         }), 400
 
     if not display_name:
@@ -577,20 +767,28 @@ def register():
             "error": "Password must be at least 8 characters."
         }), 400
 
-    if User.query.filter_by(username=username).first():
+    if User.query.filter_by(
+        username=username
+    ).first():
         return jsonify({
             "error": "Username already exists."
         }), 409
 
-    if email and User.query.filter_by(email=email).first():
+    if email and User.query.filter_by(
+        email=email
+    ).first():
         return jsonify({
             "error": "Email already exists."
         }), 409
 
-    if phone and User.query.filter_by(phone=phone).first():
+    if phone and User.query.filter_by(
+        phone=phone
+    ).first():
         return jsonify({
             "error": "Mobile number already exists."
         }), 409
+
+    now = utc_now()
 
     user = User(
         username=username,
@@ -599,8 +797,8 @@ def register():
         phone=phone or None,
         password_hash=generate_password_hash(password),
         online_status=True,
-        last_seen=utc_now(),
-        created_at=utc_now(),
+        last_seen=now,
+        created_at=now,
     )
 
     db.session.add(user)
@@ -618,35 +816,46 @@ def register():
 
 @app.post("/api/login")
 def login():
-
     data = request.get_json(silent=True) or {}
 
-    identifier = data.get("identifier", "").strip()
-    password   = data.get("password", "")
+    identifier = str(
+        data.get("identifier", "")
+    ).strip()
+
+    password = str(
+        data.get("password", "")
+    )
 
     if not identifier or not password:
         return jsonify({
-            "error": "Email/mobile/username and password are required."
+            "error": (
+                "Email/mobile/username and password "
+                "are required."
+            )
         }), 400
 
     normalized = identifier.lower()
+    normalized_phone = normalize_phone(identifier)
 
-    # Try email, phone, OR username
     user = User.query.filter(
         db.or_(
-            User.email    == normalized,
-            User.phone    == normalize_phone(identifier),
+            User.email == normalized,
+            User.phone == normalized_phone,
             User.username == normalized,
         )
     ).first()
 
-    if not user or not check_password_hash(user.password_hash, password):
+    if not user or not check_password_hash(
+        user.password_hash,
+        password,
+    ):
         return jsonify({
             "error": "Invalid login details."
         }), 401
 
     user.online_status = True
     user.last_seen = utc_now()
+
     db.session.commit()
 
     session.clear()
@@ -662,8 +871,9 @@ def login():
 @app.post("/api/logout")
 @login_required
 def logout():
-
     user = current_user()
+
+    user_id = user.id
 
     user.online_status = False
     user.last_seen = utc_now()
@@ -671,14 +881,17 @@ def logout():
     db.session.commit()
 
     emit_to_user(
-        user.id,
+        user_id,
         "presence:update",
         {
-            "user_id": user.id,
+            "user_id": user_id,
             "online": False,
             "last_seen": iso_time(user.last_seen),
         },
     )
+
+    # Remove all currently tracked sockets for this user.
+    connected_users.pop(user_id, None)
 
     session.clear()
 
@@ -690,7 +903,6 @@ def logout():
 @app.get("/api/me")
 @login_required
 def me():
-
     user = current_user()
 
     return jsonify({
@@ -705,12 +917,10 @@ def me():
 @app.get("/api/users/search")
 @login_required
 def search_users():
-
     user = current_user()
 
-    query = request.args.get(
-        "q",
-        ""
+    query = str(
+        request.args.get("q", "")
     ).strip()
 
     if len(query) < 2:
@@ -725,11 +935,17 @@ def search_users():
         .filter(
             User.id != user.id,
             db.or_(
-                User.username.ilike(f"%{search}%"),
-                User.display_name.ilike(f"%{query}%"),
+                User.username.ilike(
+                    f"%{search}%"
+                ),
+                User.display_name.ilike(
+                    f"%{query}%"
+                ),
             ),
         )
-        .order_by(User.username.asc())
+        .order_by(
+            User.username.asc()
+        )
         .limit(20)
         .all()
     )
@@ -749,7 +965,6 @@ def search_users():
 @app.post("/api/chats/<int:user_id>")
 @login_required
 def create_chat(user_id):
-
     me_user = current_user()
 
     if user_id == me_user.id:
@@ -757,7 +972,10 @@ def create_chat(user_id):
             "error": "You cannot chat with yourself."
         }), 400
 
-    target = db.session.get(User, user_id)
+    target = db.session.get(
+        User,
+        user_id,
+    )
 
     if not target:
         return jsonify({
@@ -782,7 +1000,6 @@ def create_chat(user_id):
 @app.get("/api/chats")
 @login_required
 def chats():
-
     me_user = current_user()
 
     conversations = (
@@ -793,19 +1010,15 @@ def chats():
                 Conversation.user_two_id == me_user.id,
             )
         )
-        .order_by(
-            Conversation.created_at.desc()
-        )
         .all()
     )
 
     result = []
 
     for conversation in conversations:
-
         target = other_user(
             conversation,
-            me_user.id
+            me_user.id,
         )
 
         if not target:
@@ -844,9 +1057,9 @@ def chats():
         })
 
     result.sort(
-        key=lambda x: (
-            x["last_message"]["created_at"]
-            if x["last_message"]
+        key=lambda item: (
+            item["last_message"]["created_at"]
+            if item["last_message"]
             else ""
         ),
         reverse=True,
@@ -864,12 +1077,11 @@ def chats():
 @app.get("/api/chats/<int:conversation_id>/messages")
 @login_required
 def get_messages(conversation_id):
-
     me_user = current_user()
 
     conversation = db.session.get(
         Conversation,
-        conversation_id
+        conversation_id,
     )
 
     if not conversation:
@@ -879,7 +1091,7 @@ def get_messages(conversation_id):
 
     if not conversation_has_user(
         conversation,
-        me_user.id
+        me_user.id,
     ):
         return jsonify({
             "error": "You are not allowed to access this chat."
@@ -889,15 +1101,15 @@ def get_messages(conversation_id):
         limit = int(
             request.args.get(
                 "limit",
-                100
+                100,
             )
         )
-    except ValueError:
+    except (ValueError, TypeError):
         limit = 100
 
     limit = max(
         1,
-        min(limit, 200)
+        min(limit, 200),
     )
 
     messages = (
@@ -914,13 +1126,10 @@ def get_messages(conversation_id):
 
     messages.reverse()
 
-    # Opening the chat means received messages become delivered/read.
     now = utc_now()
-
     changed = False
 
     for message in messages:
-
         if (
             message.receiver_id == me_user.id
             and message.delivered_at is None
@@ -940,8 +1149,8 @@ def get_messages(conversation_id):
 
     return jsonify({
         "messages": [
-            message_public(m)
-            for m in messages
+            message_public(message)
+            for message in messages
         ]
     })
 
@@ -953,12 +1162,13 @@ def get_messages(conversation_id):
 @app.post("/api/profile")
 @login_required
 def update_profile():
-
     user = current_user()
 
-    display_name = request.form.get(
-        "display_name",
-        ""
+    display_name = str(
+        request.form.get(
+            "display_name",
+            "",
+        )
     ).strip()
 
     if not display_name:
@@ -978,7 +1188,6 @@ def update_profile():
     )
 
     if photo and photo.filename:
-
         allowed = {
             "png",
             "jpg",
@@ -997,7 +1206,10 @@ def update_profile():
 
         if extension not in allowed:
             return jsonify({
-                "error": "Only PNG, JPG, JPEG, WEBP and GIF are allowed."
+                "error": (
+                    "Only PNG, JPG, JPEG, "
+                    "WEBP and GIF are allowed."
+                )
             }), 400
 
         filename = (
@@ -1008,7 +1220,7 @@ def update_profile():
 
         path = os.path.join(
             UPLOAD_DIR,
-            safe_name
+            safe_name,
         )
 
         photo.save(path)
@@ -1025,45 +1237,97 @@ def update_profile():
     })
 
 
+# ============================================================
+# PROTECTED UPLOADS
+# ============================================================
+
 @app.get("/uploads/<path:filename>")
+@login_required
 def uploaded_file(filename):
-    return send_from_directory(UPLOAD_DIR, filename)
+    # Files are no longer publicly accessible.
+    return send_from_directory(
+        UPLOAD_DIR,
+        filename,
+    )
 
 
 # ============================================================
-# FILE / IMAGE UPLOAD IN CHAT
+# FILE / IMAGE UPLOAD
 # ============================================================
 
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif", "mp4", "pdf", "doc", "docx", "zip", "txt"}
+ALLOWED_EXTENSIONS = {
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
+    "gif",
+    "mp4",
+    "pdf",
+    "doc",
+    "docx",
+    "zip",
+    "txt",
+}
+
 
 def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[-1].lower() in ALLOWED_EXTENSIONS
+    return (
+        "." in filename
+        and filename.rsplit(
+            ".",
+            1,
+        )[-1].lower()
+        in ALLOWED_EXTENSIONS
+    )
+
 
 @app.post("/api/upload")
 @login_required
 def upload_file():
     if "file" not in request.files:
-        return jsonify({"error": "No file provided."}), 400
+        return jsonify({
+            "error": "No file provided."
+        }), 400
 
     file = request.files["file"]
 
     if not file.filename:
-        return jsonify({"error": "Empty filename."}), 400
+        return jsonify({
+            "error": "Empty filename."
+        }), 400
 
     if not allowed_file(file.filename):
-        return jsonify({"error": "File type not allowed."}), 400
+        return jsonify({
+            "error": "File type not allowed."
+        }), 400
 
-    ext = file.filename.rsplit(".", 1)[-1].lower()
-    filename = f"{uuid.uuid4().hex}.{ext}"
+    ext = (
+        file.filename
+        .rsplit(".", 1)[-1]
+        .lower()
+    )
+
+    filename = (
+        f"{uuid.uuid4().hex}.{ext}"
+    )
+
     safe_name = secure_filename(filename)
-    path = os.path.join(UPLOAD_DIR, safe_name)
+
+    path = os.path.join(
+        UPLOAD_DIR,
+        safe_name,
+    )
+
     file.save(path)
 
     mime = file.content_type or ""
+
     if mime.startswith("image/"):
         ftype = "image"
+
     elif mime.startswith("video/"):
         ftype = "video"
+
     else:
         ftype = "file"
 
@@ -1083,24 +1347,50 @@ def upload_file():
 @login_required
 def delete_message(message_id):
     user = current_user()
-    message = db.session.get(Message, message_id)
+
+    message = db.session.get(
+        Message,
+        message_id,
+    )
 
     if not message:
-        return jsonify({"error": "Message not found."}), 404
+        return jsonify({
+            "error": "Message not found."
+        }), 404
 
     if message.sender_id != user.id:
-        return jsonify({"error": "Not allowed."}), 403
+        return jsonify({
+            "error": "Not allowed."
+        }), 403
 
     message.is_deleted = True
     message.message = ""
+    message.file_url = None
+    message.file_name = None
+    message.file_type = None
+
     db.session.commit()
 
-    # Notify both sides via socket
-    payload = {"message_id": message.id, "conversation_id": message.conversation_id}
-    emit_to_user(message.sender_id, "message:deleted", payload)
-    emit_to_user(message.receiver_id, "message:deleted", payload)
+    payload = {
+        "message_id": message.id,
+        "conversation_id": message.conversation_id,
+    }
 
-    return jsonify({"ok": True})
+    emit_to_user(
+        message.sender_id,
+        "message:deleted",
+        payload,
+    )
+
+    emit_to_user(
+        message.receiver_id,
+        "message:deleted",
+        payload,
+    )
+
+    return jsonify({
+        "ok": True
+    })
 
 
 # ============================================================
@@ -1111,36 +1401,69 @@ def delete_message(message_id):
 @login_required
 def edit_message(message_id):
     user = current_user()
-    message = db.session.get(Message, message_id)
+
+    message = db.session.get(
+        Message,
+        message_id,
+    )
 
     if not message:
-        return jsonify({"error": "Message not found."}), 404
+        return jsonify({
+            "error": "Message not found."
+        }), 404
 
     if message.sender_id != user.id:
-        return jsonify({"error": "Not allowed."}), 403
+        return jsonify({
+            "error": "Not allowed."
+        }), 403
 
     if message.is_deleted:
-        return jsonify({"error": "Cannot edit deleted message."}), 400
+        return jsonify({
+            "error": "Cannot edit deleted message."
+        }), 400
 
-    data = request.get_json(silent=True) or {}
-    new_text = data.get("message", "").strip()
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    new_text = str(
+        data.get("message", "")
+    ).strip()
 
     if not new_text:
-        return jsonify({"error": "Message cannot be empty."}), 400
+        return jsonify({
+            "error": "Message cannot be empty."
+        }), 400
 
     if len(new_text) > 5000:
-        return jsonify({"error": "Message too long."}), 400
+        return jsonify({
+            "error": "Message too long."
+        }), 400
 
     message.message = new_text
     message.is_edited = True
     message.edited_at = utc_now()
+
     db.session.commit()
 
     payload = message_public(message)
-    emit_to_user(message.sender_id, "message:edited", payload)
-    emit_to_user(message.receiver_id, "message:edited", payload)
 
-    return jsonify({"ok": True, "message": payload})
+    emit_to_user(
+        message.sender_id,
+        "message:edited",
+        payload,
+    )
+
+    emit_to_user(
+        message.receiver_id,
+        "message:edited",
+        payload,
+    )
+
+    return jsonify({
+        "ok": True,
+        "message": payload,
+    })
 
 
 # ============================================================
@@ -1151,29 +1474,61 @@ def edit_message(message_id):
 @login_required
 def pin_message(message_id):
     user = current_user()
-    message = db.session.get(Message, message_id)
+
+    message = db.session.get(
+        Message,
+        message_id,
+    )
 
     if not message:
-        return jsonify({"error": "Message not found."}), 404
+        return jsonify({
+            "error": "Message not found."
+        }), 404
+
+    conversation = db.session.get(
+        Conversation,
+        message.conversation_id,
+    )
 
     if not conversation_has_user(
-        db.session.get(Conversation, message.conversation_id), user.id
+        conversation,
+        user.id,
     ):
-        return jsonify({"error": "Not allowed."}), 403
+        return jsonify({
+            "error": "Not allowed."
+        }), 403
 
     message.is_pinned = not message.is_pinned
+
     db.session.commit()
 
     payload = {
         "message_id": message.id,
         "conversation_id": message.conversation_id,
         "is_pinned": message.is_pinned,
-        "message_text": message.message,
+        "message_text": (
+            "🗑 Deleted message"
+            if message.is_deleted
+            else message.message
+        ),
     }
-    emit_to_user(message.sender_id, "message:pinned", payload)
-    emit_to_user(message.receiver_id, "message:pinned", payload)
 
-    return jsonify({"ok": True, "is_pinned": message.is_pinned})
+    emit_to_user(
+        message.sender_id,
+        "message:pinned",
+        payload,
+    )
+
+    emit_to_user(
+        message.receiver_id,
+        "message:pinned",
+        payload,
+    )
+
+    return jsonify({
+        "ok": True,
+        "is_pinned": message.is_pinned,
+    })
 
 
 # ============================================================
@@ -1184,24 +1539,64 @@ def pin_message(message_id):
 @login_required
 def forward_message(message_id):
     user = current_user()
-    source = db.session.get(Message, message_id)
+
+    source = db.session.get(
+        Message,
+        message_id,
+    )
 
     if not source or source.is_deleted:
-        return jsonify({"error": "Message not found."}), 404
+        return jsonify({
+            "error": "Message not found."
+        }), 404
 
-    data = request.get_json(silent=True) or {}
+    # IMPORTANT:
+    # User can only forward a message from a conversation
+    # in which they are a participant.
+    source_conversation = db.session.get(
+        Conversation,
+        source.conversation_id,
+    )
+
+    if not conversation_has_user(
+        source_conversation,
+        user.id,
+    ):
+        return jsonify({
+            "error": "Not allowed."
+        }), 403
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
     try:
-        receiver_id = int(data.get("receiver_id"))
+        receiver_id = int(
+            data.get("receiver_id")
+        )
     except (TypeError, ValueError):
-        return jsonify({"error": "Invalid receiver."}), 400
+        return jsonify({
+            "error": "Invalid receiver."
+        }), 400
 
-    receiver = db.session.get(User, receiver_id)
+    receiver = db.session.get(
+        User,
+        receiver_id,
+    )
+
     if not receiver or receiver.id == user.id:
-        return jsonify({"error": "Invalid receiver."}), 400
+        return jsonify({
+            "error": "Invalid receiver."
+        }), 400
 
-    conversation = get_or_create_conversation(user.id, receiver.id)
+    conversation = get_or_create_conversation(
+        user.id,
+        receiver.id,
+    )
 
-    fwd = Message(
+    now = utc_now()
+
+    forwarded = Message(
         conversation_id=conversation.id,
         sender_id=user.id,
         receiver_id=receiver.id,
@@ -1210,20 +1605,33 @@ def forward_message(message_id):
         file_url=source.file_url,
         file_name=source.file_name,
         file_type=source.file_type,
-        created_at=utc_now(),
+        created_at=now,
     )
 
     if receiver.id in connected_users:
-        fwd.delivered_at = utc_now()
+        forwarded.delivered_at = now
 
-    db.session.add(fwd)
+    db.session.add(forwarded)
     db.session.commit()
 
-    payload = message_public(fwd)
-    emit_to_user(user.id, "message:new", payload)
-    emit_to_user(receiver.id, "message:new", payload)
+    payload = message_public(forwarded)
 
-    return jsonify({"ok": True, "message": payload})
+    emit_to_user(
+        user.id,
+        "message:new",
+        payload,
+    )
+
+    emit_to_user(
+        receiver.id,
+        "message:new",
+        payload,
+    )
+
+    return jsonify({
+        "ok": True,
+        "message": payload,
+    })
 
 
 # ============================================================
@@ -1234,76 +1642,156 @@ def forward_message(message_id):
 @login_required
 def react_message(message_id):
     user = current_user()
-    message = db.session.get(Message, message_id)
+
+    message = db.session.get(
+        Message,
+        message_id,
+    )
 
     if not message or message.is_deleted:
-        return jsonify({"error": "Message not found."}), 404
+        return jsonify({
+            "error": "Message not found."
+        }), 404
 
-    data = request.get_json(silent=True) or {}
-    emoji = data.get("emoji", "").strip()
+    conversation = db.session.get(
+        Conversation,
+        message.conversation_id,
+    )
+
+    if not conversation_has_user(
+        conversation,
+        user.id,
+    ):
+        return jsonify({
+            "error": "Not allowed."
+        }), 403
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    emoji = str(
+        data.get("emoji", "")
+    ).strip()
 
     if not emoji or len(emoji) > 10:
-        return jsonify({"error": "Invalid emoji."}), 400
+        return jsonify({
+            "error": "Invalid emoji."
+        }), 400
 
-    existing = Reaction.query.filter_by(
-        message_id=message_id, user_id=user.id
-    ).first()
+    existing = (
+        Reaction.query
+        .filter_by(
+            message_id=message_id,
+            user_id=user.id,
+        )
+        .first()
+    )
 
     if existing:
         if existing.emoji == emoji:
-            # Toggle off — remove reaction
             db.session.delete(existing)
         else:
             existing.emoji = emoji
     else:
-        db.session.add(Reaction(
-            message_id=message_id,
-            user_id=user.id,
-            emoji=emoji,
-        ))
+        db.session.add(
+            Reaction(
+                message_id=message_id,
+                user_id=user.id,
+                emoji=emoji,
+            )
+        )
 
     db.session.commit()
 
-    # Build updated reactions map
-    rows = Reaction.query.filter_by(message_id=message_id).all()
+    rows = (
+        Reaction.query
+        .filter_by(
+            message_id=message_id
+        )
+        .all()
+    )
+
     reactions = {}
-    for r in rows:
-        reactions[r.emoji] = reactions.get(r.emoji, 0) + 1
+
+    for reaction in rows:
+        reactions[reaction.emoji] = (
+            reactions.get(
+                reaction.emoji,
+                0,
+            ) + 1
+        )
 
     payload = {
         "message_id": message_id,
         "conversation_id": message.conversation_id,
         "reactions": reactions,
     }
-    emit_to_user(message.sender_id, "message:reaction", payload)
-    emit_to_user(message.receiver_id, "message:reaction", payload)
 
-    return jsonify({"ok": True, "reactions": reactions})
+    emit_to_user(
+        message.sender_id,
+        "message:reaction",
+        payload,
+    )
+
+    emit_to_user(
+        message.receiver_id,
+        "message:reaction",
+        payload,
+    )
+
+    return jsonify({
+        "ok": True,
+        "reactions": reactions,
+    })
 
 
 # ============================================================
-# GET PINNED MESSAGES IN CONVERSATION
+# GET PINNED MESSAGES
 # ============================================================
 
 @app.get("/api/chats/<int:conversation_id>/pinned")
 @login_required
 def get_pinned(conversation_id):
     user = current_user()
-    conversation = db.session.get(Conversation, conversation_id)
+
+    conversation = db.session.get(
+        Conversation,
+        conversation_id,
+    )
 
     if not conversation:
-        return jsonify({"error": "Not found."}), 404
+        return jsonify({
+            "error": "Not found."
+        }), 404
 
-    if not conversation_has_user(conversation, user.id):
-        return jsonify({"error": "Not allowed."}), 403
+    if not conversation_has_user(
+        conversation,
+        user.id,
+    ):
+        return jsonify({
+            "error": "Not allowed."
+        }), 403
 
-    pinned = Message.query.filter_by(
-        conversation_id=conversation_id,
-        is_pinned=True,
-        is_deleted=False,
-    ).order_by(Message.id.desc()).all()
+    pinned = (
+        Message.query
+        .filter_by(
+            conversation_id=conversation_id,
+            is_pinned=True,
+            is_deleted=False,
+        )
+        .order_by(
+            Message.id.desc()
+        )
+        .all()
+    )
 
-    return jsonify({"messages": [message_public(m) for m in pinned]})
+    return jsonify({
+        "messages": [
+            message_public(message)
+            for message in pinned
+        ]
+    })
 
 
 # ============================================================
@@ -1312,19 +1800,25 @@ def get_pinned(conversation_id):
 
 @socketio.on("connect")
 def socket_connect():
-
     user = current_user()
 
     if not user:
-        emit("server:error", {"error": "Login required."})
-        return  # allow connection, JS will handle redirect
+        emit(
+            "server:error",
+            {
+                "error": "Login required."
+            },
+        )
+        return
 
     sid = request.sid
 
     sockets = connected_users.setdefault(
         user.id,
-        set()
+        set(),
     )
+
+    was_offline = not sockets
 
     sockets.add(sid)
 
@@ -1337,20 +1831,21 @@ def socket_connect():
 
     db.session.commit()
 
-    emit(
-        "presence:update",
-        {
-            "user_id": user.id,
-            "online": True,
-            "last_seen": iso_time(user.last_seen),
-        },
-        broadcast=True,
-    )
+    if was_offline:
+        socketio.emit(
+            "presence:update",
+            {
+                "user_id": user.id,
+                "online": True,
+                "last_seen": iso_time(
+                    user.last_seen
+                ),
+            },
+        )
 
 
 @socketio.on("disconnect")
 def socket_disconnect():
-
     user = current_user()
 
     if not user:
@@ -1360,7 +1855,7 @@ def socket_disconnect():
 
     sockets = connected_users.get(
         user.id,
-        set()
+        set(),
     )
 
     sockets.discard(sid)
@@ -1368,7 +1863,7 @@ def socket_disconnect():
     if not sockets:
         connected_users.pop(
             user.id,
-            None
+            None,
         )
 
         user.online_status = False
@@ -1381,7 +1876,9 @@ def socket_disconnect():
             {
                 "user_id": user.id,
                 "online": False,
-                "last_seen": iso_time(user.last_seen),
+                "last_seen": iso_time(
+                    user.last_seen
+                ),
             },
         )
 
@@ -1392,23 +1889,37 @@ def socket_disconnect():
 
 @socketio.on("chat:send")
 def socket_send_message(data):
-
     user = current_user()
 
     if not user:
-        emit("server:error", {"error": "Login required."})
+        emit(
+            "server:error",
+            {
+                "error": "Login required."
+            },
+        )
         return
 
     data = data or {}
 
     try:
-        receiver_id = int(data.get("receiver_id"))
+        receiver_id = int(
+            data.get("receiver_id")
+        )
     except (TypeError, ValueError):
-        emit("server:error", {"error": "Invalid receiver."})
+        emit(
+            "server:error",
+            {
+                "error": "Invalid receiver."
+            },
+        )
         return
 
-    text = str(data.get("message", "")).strip()
-    file_url  = data.get("file_url") or None
+    text = str(
+        data.get("message", "")
+    ).strip()
+
+    file_url = data.get("file_url") or None
     file_name = data.get("file_name") or None
     file_type = data.get("file_type") or None
 
@@ -1416,52 +1927,114 @@ def socket_send_message(data):
         return
 
     if len(text) > 5000:
-        emit("server:error", {"error": "Message is too long."})
+        emit(
+            "server:error",
+            {
+                "error": "Message is too long."
+            },
+        )
         return
 
-    # Reply to
+    receiver = db.session.get(
+        User,
+        receiver_id,
+    )
+
+    if not receiver:
+        emit(
+            "server:error",
+            {
+                "error": "User not found."
+            },
+        )
+        return
+
+    if receiver.id == user.id:
+        emit(
+            "server:error",
+            {
+                "error": (
+                    "You cannot send a message "
+                    "to yourself."
+                )
+            },
+        )
+        return
+
+    conversation = get_or_create_conversation(
+        user.id,
+        receiver.id,
+    )
+
+    # Validate reply message.
     reply_to_id = None
     raw_reply = data.get("reply_to_id")
+
     if raw_reply:
         try:
             reply_to_id = int(raw_reply)
         except (TypeError, ValueError):
-            pass
+            reply_to_id = None
 
-    receiver = db.session.get(User, receiver_id)
+    if reply_to_id:
+        parent = db.session.get(
+            Message,
+            reply_to_id,
+        )
 
-    if not receiver:
-        emit("server:error", {"error": "User not found."})
-        return
+        if not parent:
+            emit(
+                "server:error",
+                {
+                    "error": "Reply message not found."
+                },
+            )
+            return
 
-    if receiver.id == user.id:
-        emit("server:error", {"error": "You cannot send a message to yourself."})
-        return
+        if parent.conversation_id != conversation.id:
+            emit(
+                "server:error",
+                {
+                    "error": "Invalid reply message."
+                },
+            )
+            return
 
-    conversation = get_or_create_conversation(user.id, receiver.id)
+    now = utc_now()
 
     message = Message(
         conversation_id=conversation.id,
         sender_id=user.id,
         receiver_id=receiver.id,
-        message=text or "",
+        message=text,
         reply_to_id=reply_to_id,
         file_url=file_url,
         file_name=file_name,
         file_type=file_type,
-        created_at=utc_now(),
+        created_at=now,
     )
 
     if receiver.id in connected_users:
-        message.delivered_at = utc_now()
+        message.delivered_at = now
 
     db.session.add(message)
     db.session.commit()
 
     payload = message_public(message)
 
-    emit("message:new", payload, to=request.sid)
-    emit_to_user(receiver.id, "message:new", payload)
+    # Send to sender's current socket.
+    emit(
+        "message:new",
+        payload,
+        to=request.sid,
+    )
+
+    # Send to all receiver sockets.
+    emit_to_user(
+        receiver.id,
+        "message:new",
+        payload,
+    )
 
     if message.delivered_at:
         emit(
@@ -1470,7 +2043,9 @@ def socket_send_message(data):
                 "conversation_id": conversation.id,
                 "message_id": message.id,
                 "status": "delivered",
-                "delivered_at": iso_time(message.delivered_at),
+                "delivered_at": iso_time(
+                    message.delivered_at
+                ),
             },
             to=request.sid,
         )
@@ -1482,7 +2057,6 @@ def socket_send_message(data):
 
 @socketio.on("chat:read")
 def socket_chat_read(data):
-
     user = current_user()
 
     if not user:
@@ -1499,7 +2073,7 @@ def socket_chat_read(data):
 
     conversation = db.session.get(
         Conversation,
-        conversation_id
+        conversation_id,
     )
 
     if not conversation:
@@ -1507,7 +2081,7 @@ def socket_chat_read(data):
 
     if not conversation_has_user(
         conversation,
-        user.id
+        user.id,
     ):
         return
 
@@ -1526,31 +2100,36 @@ def socket_chat_read(data):
     if not messages:
         return
 
+    status_updates = []
+
     for message in messages:
         message.read_at = now
 
         if message.delivered_at is None:
             message.delivered_at = now
 
-        sender_id = message.sender_id
-
-        emit_to_user(
-            sender_id,
-            "message:status",
-            {
-                "conversation_id": conversation_id,
-                "message_id": message.id,
-                "status": "read",
-                "delivered_at": iso_time(
-                    message.delivered_at
-                ),
-                "read_at": iso_time(
-                    message.read_at
-                ),
-            },
-        )
+        status_updates.append({
+            "conversation_id": conversation_id,
+            "message_id": message.id,
+            "status": "read",
+            "delivered_at": iso_time(
+                message.delivered_at
+            ),
+            "read_at": iso_time(
+                message.read_at
+            ),
+            "sender_id": message.sender_id,
+        })
 
     db.session.commit()
+
+    # Send read status after commit.
+    for update in status_updates:
+        emit_to_user(
+            update["sender_id"],
+            "message:status",
+            update,
+        )
 
 
 # ============================================================
@@ -1559,7 +2138,6 @@ def socket_chat_read(data):
 
 @socketio.on("typing:start")
 def typing_start(data):
-
     user = current_user()
 
     if not user:
@@ -1576,7 +2154,7 @@ def typing_start(data):
 
     receiver = db.session.get(
         User,
-        receiver_id
+        receiver_id,
     )
 
     if not receiver or receiver.id == user.id:
@@ -1584,7 +2162,7 @@ def typing_start(data):
 
     conversation = get_or_create_conversation(
         user.id,
-        receiver.id
+        receiver.id,
     )
 
     emit_to_user(
@@ -1600,7 +2178,6 @@ def typing_start(data):
 
 @socketio.on("typing:stop")
 def typing_stop(data):
-
     user = current_user()
 
     if not user:
@@ -1617,7 +2194,7 @@ def typing_stop(data):
 
     receiver = db.session.get(
         User,
-        receiver_id
+        receiver_id,
     )
 
     if not receiver:
@@ -1625,7 +2202,7 @@ def typing_stop(data):
 
     conversation = get_or_create_conversation(
         user.id,
-        receiver.id
+        receiver.id,
     )
 
     emit_to_user(
@@ -1643,25 +2220,16 @@ def typing_stop(data):
 # CALLS
 # ============================================================
 
-def get_call(call_id):
-    try:
-        return db.session.get(
-            Call,
-            int(call_id)
-        )
-    except (TypeError, ValueError):
-        return None
-
-
 @socketio.on("call:start")
 def call_start(data):
-
     user = current_user()
 
     if not user:
         emit(
             "server:error",
-            {"error": "Login required."}
+            {
+                "error": "Login required."
+            },
         )
         return
 
@@ -1674,14 +2242,18 @@ def call_start(data):
     except (TypeError, ValueError):
         emit(
             "server:error",
-            {"error": "Invalid receiver."}
+            {
+                "error": "Invalid receiver."
+            },
         )
         return
 
-    call_type = data.get(
-        "call_type",
-        "voice"
-    )
+    call_type = str(
+        data.get(
+            "call_type",
+            "voice",
+        )
+    ).lower()
 
     if call_type not in {
         "voice",
@@ -1689,19 +2261,50 @@ def call_start(data):
     }:
         emit(
             "server:error",
-            {"error": "Invalid call type."}
+            {
+                "error": "Invalid call type."
+            },
         )
         return
 
     receiver = db.session.get(
         User,
-        receiver_id
+        receiver_id,
     )
 
     if not receiver or receiver.id == user.id:
         emit(
             "server:error",
-            {"error": "Invalid receiver."}
+            {
+                "error": "Invalid receiver."
+            },
+        )
+        return
+
+    # Do not create another call if one is already active.
+    active_call = Call.query.filter(
+        db.or_(
+            db.and_(
+                Call.caller_id == user.id,
+                Call.receiver_id == receiver.id,
+            ),
+            db.and_(
+                Call.caller_id == receiver.id,
+                Call.receiver_id == user.id,
+            ),
+        ),
+        Call.status.in_([
+            "ringing",
+            "accepted",
+        ]),
+    ).first()
+
+    if active_call:
+        emit(
+            "server:error",
+            {
+                "error": "A call is already active."
+            },
         )
         return
 
@@ -1727,19 +2330,18 @@ def call_start(data):
     emit(
         "call:started",
         payload,
-        to=request.sid
+        to=request.sid,
     )
 
     emit_to_user(
         receiver.id,
         "call:incoming",
-        payload
+        payload,
     )
 
 
 @socketio.on("call:accept")
 def call_accept(data):
-
     user = current_user()
 
     if not user:
@@ -1777,7 +2379,6 @@ def call_accept(data):
 
 @socketio.on("call:reject")
 def call_reject(data):
-
     user = current_user()
 
     if not user:
@@ -1792,9 +2393,9 @@ def call_reject(data):
     if not call:
         return
 
-    if user.id not in (
-        call.caller_id,
-        call.receiver_id,
+    if not call_has_user(
+        call,
+        user.id,
     ):
         return
 
@@ -1809,10 +2410,9 @@ def call_reject(data):
 
     db.session.commit()
 
-    other_id = (
-        call.receiver_id
-        if user.id == call.caller_id
-        else call.caller_id
+    other_id = call_other_user_id(
+        call,
+        user.id,
     )
 
     emit_to_user(
@@ -1826,7 +2426,6 @@ def call_reject(data):
 
 @socketio.on("call:end")
 def call_end(data):
-
     user = current_user()
 
     if not user:
@@ -1841,13 +2440,16 @@ def call_end(data):
     if not call:
         return
 
-    if user.id not in (
-        call.caller_id,
-        call.receiver_id,
+    if not call_has_user(
+        call,
+        user.id,
     ):
         return
 
-    if call.status == "ended":
+    if call.status in {
+        "ended",
+        "rejected",
+    }:
         return
 
     call.status = "ended"
@@ -1855,10 +2457,9 @@ def call_end(data):
 
     db.session.commit()
 
-    other_id = (
-        call.receiver_id
-        if user.id == call.caller_id
-        else call.caller_id
+    other_id = call_other_user_id(
+        call,
+        user.id,
     )
 
     emit_to_user(
@@ -1874,9 +2475,24 @@ def call_end(data):
 # WEBRTC SIGNALING
 # ============================================================
 
+def valid_signaling_call(call, user_id):
+    if not call:
+        return False
+
+    if not call_has_user(
+        call,
+        user_id,
+    ):
+        return False
+
+    if call.status != "accepted":
+        return False
+
+    return True
+
+
 @socketio.on("webrtc:offer")
 def webrtc_offer(data):
-
     user = current_user()
 
     if not user:
@@ -1888,19 +2504,20 @@ def webrtc_offer(data):
         data.get("call_id")
     )
 
-    if not call:
-        return
-
-    if user.id not in (
-        call.caller_id,
-        call.receiver_id,
+    if not valid_signaling_call(
+        call,
+        user.id,
     ):
         return
 
-    other_id = (
-        call.receiver_id
-        if user.id == call.caller_id
-        else call.caller_id
+    offer = data.get("offer")
+
+    if not offer:
+        return
+
+    other_id = call_other_user_id(
+        call,
+        user.id,
     )
 
     emit_to_user(
@@ -1908,14 +2525,13 @@ def webrtc_offer(data):
         "webrtc:offer",
         {
             "call_id": call.id,
-            "offer": data.get("offer"),
+            "offer": offer,
         },
     )
 
 
 @socketio.on("webrtc:answer")
 def webrtc_answer(data):
-
     user = current_user()
 
     if not user:
@@ -1927,19 +2543,20 @@ def webrtc_answer(data):
         data.get("call_id")
     )
 
-    if not call:
-        return
-
-    if user.id not in (
-        call.caller_id,
-        call.receiver_id,
+    if not valid_signaling_call(
+        call,
+        user.id,
     ):
         return
 
-    other_id = (
-        call.receiver_id
-        if user.id == call.caller_id
-        else call.caller_id
+    answer = data.get("answer")
+
+    if not answer:
+        return
+
+    other_id = call_other_user_id(
+        call,
+        user.id,
     )
 
     emit_to_user(
@@ -1947,14 +2564,13 @@ def webrtc_answer(data):
         "webrtc:answer",
         {
             "call_id": call.id,
-            "answer": data.get("answer"),
+            "answer": answer,
         },
     )
 
 
 @socketio.on("webrtc:ice")
 def webrtc_ice(data):
-
     user = current_user()
 
     if not user:
@@ -1966,19 +2582,20 @@ def webrtc_ice(data):
         data.get("call_id")
     )
 
-    if not call:
-        return
-
-    if user.id not in (
-        call.caller_id,
-        call.receiver_id,
+    if not valid_signaling_call(
+        call,
+        user.id,
     ):
         return
 
-    other_id = (
-        call.receiver_id
-        if user.id == call.caller_id
-        else call.caller_id
+    candidate = data.get("candidate")
+
+    if not candidate:
+        return
+
+    other_id = call_other_user_id(
+        call,
+        user.id,
     )
 
     emit_to_user(
@@ -1986,9 +2603,20 @@ def webrtc_ice(data):
         "webrtc:ice",
         {
             "call_id": call.id,
-            "candidate": data.get("candidate"),
+            "candidate": candidate,
         },
     )
+
+
+# ============================================================
+# ERROR HANDLERS
+# ============================================================
+
+@app.errorhandler(413)
+def request_too_large(error):
+    return jsonify({
+        "error": "File/request is too large. Maximum size is 5 MB."
+    }), 413
 
 
 # ============================================================
@@ -1996,7 +2624,6 @@ def webrtc_ice(data):
 # ============================================================
 
 if __name__ == "__main__":
-
     print()
     print("=" * 60)
     print("ChatWave server starting...")
@@ -2004,15 +2631,23 @@ if __name__ == "__main__":
     print("Local:   http://127.0.0.1:5000")
     print("Network: http://0.0.0.0:5000")
     print("Database: chatwave.db")
+    print(
+        "Production:",
+        "YES" if IS_PRODUCTION else "NO",
+    )
     print("=" * 60)
     print()
 
     socketio.run(
         app,
         host="0.0.0.0",
-        port=5000,
-        debug=True,
-        allow_unsafe_werkzeug=True,
+        port=int(
+            os.environ.get(
+                "PORT",
+                5000,
+            )
+        ),
+        debug=not IS_PRODUCTION,
+        allow_unsafe_werkzeug=not IS_PRODUCTION,
     )
-
-    
+```

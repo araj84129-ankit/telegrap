@@ -1,13 +1,28 @@
 "use strict";
 
-
 /* =========================================================
-   SHORT SELECTOR
+   CHATWAVE - MAIN JAVASCRIPT
+   Fixed version
+   Send Message + Socket + Typing + Calls
 ========================================================= */
 
-const $ = (selector) => {
-    return document.querySelector(selector);
-};
+
+/* =========================================================
+   HELPER
+========================================================= */
+
+function $(selector) {
+    const element = document.querySelector(selector);
+
+    if (!element) {
+        console.warn(
+            "Element not found:",
+            selector
+        );
+    }
+
+    return element;
+}
 
 
 /* =========================================================
@@ -22,221 +37,87 @@ const state = {
 
     chats: [],
 
-    activeChat: null,
-
     messages: new Map(),
 
-    typingTimer: null,
+    activeChat: null,
 
     typingActive: false,
 
-    call: null,
+    typingTimer: null,
+
+    reconnecting: false,
 
     pc: null,
 
     localStream: null,
 
+    remoteStream: null,
+
+    call: null,
+
     pendingCandidates: [],
 
-    reconnecting: false
+    incomingCall: null
 
 };
 
 
 /* =========================================================
-   DEFAULT AVATAR
+   API HELPER
 ========================================================= */
 
-function defaultAvatar(name = "?") {
+async function api(
+    url,
+    options = {}
+) {
 
-    return (
-        "https://ui-avatars.com/api/" +
-        "?name=" +
-        encodeURIComponent(name) +
-        "&background=e1e9f6" +
-        "&color=345" +
-        "&bold=true"
-    );
-
-}
-
-
-function avatarUrl(user) {
-
-    if (user && user.profile_photo) {
-
-        return user.profile_photo;
-
-    }
-
-    return defaultAvatar(
-        user?.display_name ||
-        user?.username ||
-        "?"
-    );
-
-}
-
-
-/* =========================================================
-   HTML ESCAPE
-========================================================= */
-
-function escapeHtml(value) {
-
-    return String(value ?? "")
-        .replace(/[&<>"']/g, (char) => {
-
-            const map = {
-
-                "&": "&amp;",
-
-                "<": "&lt;",
-
-                ">": "&gt;",
-
-                '"': "&quot;",
-
-                "'": "&#039;"
-
-            };
-
-            return map[char];
-
-        });
-
-}
-
-
-/* =========================================================
-   DATE HELPERS
-========================================================= */
-
-function parseDate(value) {
-
-    if (!value) {
-        return null;
-    }
-
-    const text = String(value);
-
-    if (
-        !text.endsWith("Z") &&
-        !text.includes("+")
-    ) {
-
-        return new Date(text + "Z");
-
-    }
-
-    return new Date(text);
-
-}
-
-
-function formatTime(value) {
-
-    const date = parseDate(value);
-
-    if (!date || Number.isNaN(date.getTime())) {
-
-        return "";
-
-    }
-
-    return date.toLocaleTimeString(
-        [],
-        {
-            hour: "2-digit",
-            minute: "2-digit"
+    const config = {
+        ...options,
+        headers: {
+            ...(options.body instanceof FormData
+                ? {}
+                : {
+                    "Content-Type":
+                        "application/json"
+                }),
+            ...(options.headers || {})
         }
-    );
-
-}
+    };
 
 
-function formatDate(value) {
-
-    const date = parseDate(value);
-
-    if (!date || Number.isNaN(date.getTime())) {
-
-        return "";
-
-    }
-
-    const now = new Date();
-
-    const today = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate()
-    );
-
-    const day = new Date(
-        date.getFullYear(),
-        date.getMonth(),
-        date.getDate()
-    );
-
-    const diff = Math.round(
-        (today - day) /
-        86400000
-    );
+    const response =
+        await fetch(
+            url,
+            config
+        );
 
 
-    if (diff === 0) {
+    let data = null;
 
-        return "Today";
+    try {
+
+        data =
+            await response.json();
+
+    } catch {
+
+        data = null;
 
     }
 
 
-    if (diff === 1) {
+    if (!response.ok) {
 
-        return "Yesterday";
-
-    }
-
-
-    return date.toLocaleDateString(
-        [],
-        {
-            day: "numeric",
-            month: "short",
-            year: "numeric"
-        }
-    );
-
-}
-
-
-/* =========================================================
-   LAST SEEN
-========================================================= */
-
-function lastSeenText(user) {
-
-    if (user?.online) {
-
-        return "online";
+        throw new Error(
+            data?.error ||
+            data?.message ||
+            `Request failed: ${response.status}`
+        );
 
     }
 
 
-    if (!user?.last_seen) {
-
-        return "offline";
-
-    }
-
-
-    return (
-        "last seen " +
-        formatDate(user.last_seen) +
-        " " +
-        formatTime(user.last_seen)
-    );
+    return data;
 
 }
 
@@ -250,363 +131,310 @@ function showToast(
     type = "info"
 ) {
 
-    const container =
-        $("#toast-container");
+    let container =
+        document.querySelector(
+            "#toast-container"
+        );
+
 
     if (!container) {
+
+        container =
+            document.createElement(
+                "div"
+            );
+
+        container.id =
+            "toast-container";
+
+        container.style.position =
+            "fixed";
+
+        container.style.right =
+            "20px";
+
+        container.style.bottom =
+            "20px";
+
+        container.style.zIndex =
+            "99999";
+
+        container.style.display =
+            "flex";
+
+        container.style.flexDirection =
+            "column";
+
+        container.style.gap =
+            "10px";
+
+        document.body.appendChild(
+            container
+        );
+
+    }
+
+
+    const toast =
+        document.createElement(
+            "div"
+        );
+
+
+    toast.textContent =
+        String(message || "");
+
+
+    toast.className =
+        `toast toast-${type}`;
+
+
+    toast.style.padding =
+        "12px 16px";
+
+    toast.style.borderRadius =
+        "10px";
+
+    toast.style.background =
+        "#222";
+
+    toast.style.color =
+        "#fff";
+
+    toast.style.maxWidth =
+        "320px";
+
+    toast.style.boxShadow =
+        "0 8px 30px rgba(0,0,0,.2)";
+
+
+    container.appendChild(
+        toast
+    );
+
+
+    setTimeout(
+        () => {
+
+            toast.remove();
+
+        },
+        3500
+    );
+
+}
+
+
+/* =========================================================
+   HTML ESCAPE
+========================================================= */
+
+function escapeHtml(
+    value
+) {
+
+    return String(
+        value ?? ""
+    )
+        .replace(
+            /&/g,
+            "&amp;"
+        )
+        .replace(
+            /</g,
+            "&lt;"
+        )
+        .replace(
+            />/g,
+            "&gt;"
+        )
+        .replace(
+            /"/g,
+            "&quot;"
+        )
+        .replace(
+            /'/g,
+            "&#039;"
+        );
+
+}
+
+
+/* =========================================================
+   AVATAR URL
+========================================================= */
+
+function avatarUrl(
+    user
+) {
+
+    if (
+        user &&
+        user.avatar_url
+    ) {
+
+        return user.avatar_url;
+
+    }
+
+
+    if (
+        user &&
+        user.profile_photo
+    ) {
+
+        return user.profile_photo;
+
+    }
+
+
+    return (
+        "data:image/svg+xml," +
+        encodeURIComponent(`
+            <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="100"
+                height="100"
+                viewBox="0 0 100 100"
+            >
+                <rect
+                    width="100"
+                    height="100"
+                    fill="#ddd"
+                />
+                <circle
+                    cx="50"
+                    cy="38"
+                    r="20"
+                    fill="#999"
+                />
+                <path
+                    d="M18 90
+                       C20 65 35 55 50 55
+                       C65 55 80 65 82 90"
+                    fill="#999"
+                />
+            </svg>
+        `)
+    );
+
+}
+
+
+/* =========================================================
+   FORMAT TIME
+========================================================= */
+
+function formatTime(
+    value
+) {
+
+    if (!value) {
+        return "";
+    }
+
+
+    const date =
+        new Date(value);
+
+
+    if (
+        Number.isNaN(
+            date.getTime()
+        )
+    ) {
+
+        return "";
+
+    }
+
+
+    return date.toLocaleTimeString(
+        [],
+        {
+            hour: "2-digit",
+            minute: "2-digit"
+        }
+    );
+
+}
+
+
+/* =========================================================
+   FORMAT DATE
+========================================================= */
+
+function formatDate(
+    value
+) {
+
+    if (!value) {
+        return "";
+    }
+
+
+    const date =
+        new Date(value);
+
+
+    if (
+        Number.isNaN(
+            date.getTime()
+        )
+    ) {
+
+        return "";
+
+    }
+
+
+    return date.toLocaleDateString();
+
+}
+
+
+/* =========================================================
+   SOCKET INITIALIZATION
+========================================================= */
+
+function initializeSocket() {
+
+    if (
+        typeof io !== "function"
+    ) {
+
+        console.error(
+            "Socket.IO library load nahi hui."
+        );
+
+        showToast(
+            "Socket.IO load nahi hui.",
+            "error"
+        );
 
         return;
 
     }
 
 
-    const element =
-        document.createElement("div");
-
-    element.className =
-        `toast ${type}`;
-
-    element.textContent =
-        message;
-
-
-    container.appendChild(
-        element
-    );
-
-
-    setTimeout(() => {
-
-        element.remove();
-
-    }, 3500);
-
-}
-
-
-/* =========================================================
-   API HELPER
-========================================================= */
-
-async function api(
-    url,
-    options = {}
-) {
-
-    const config = {
-
-        credentials: "same-origin",
-
-        ...options
-
-    };
-
-
-    const headers = {
-
-        ...(config.body instanceof FormData
-            ? {}
-            : {
-                "Content-Type":
-                    "application/json"
-            }),
-
-        ...(config.headers || {})
-
-    };
-
-
-    const response =
-        await fetch(
-            url,
-            {
-                ...config,
-                headers
-            }
-        );
-
-
-    const data =
-        await response
-            .json()
-            .catch(() => ({}));
-
-
-    if (!response.ok) {
-
-        throw new Error(
-            data.error ||
-            `Request failed (${response.status})`
-        );
-
-    }
-
-
-    return data;
-
-}
-
-
-/* =========================================================
-   AUTH TAB
-========================================================= */
-
-function showAuth(tab) {
-
-    $("#login-form")
-        .classList
-        .toggle(
-            "hidden",
-            tab !== "login"
-        );
-
-
-    $("#register-form")
-        .classList
-        .toggle(
-            "hidden",
-            tab !== "register"
-        );
-
-
-    document
-        .querySelectorAll(".tab")
-        .forEach((button) => {
-
-            button.classList.toggle(
-                "active",
-                button.dataset.authTab === tab
-            );
-
-        });
-
-}
-
-
-document
-    .querySelectorAll(".tab")
-    .forEach((button) => {
-
-        button.addEventListener(
-            "click",
-            () => {
-
-                showAuth(
-                    button.dataset.authTab
-                );
-
-            }
-        );
-
-    });
-
-
-/* =========================================================
-   LOGIN
-========================================================= */
-
-$("#login-form")
-    .addEventListener(
-        "submit",
-        async (event) => {
-
-            event.preventDefault();
-
-
-            const identifier =
-                $("#login-identifier")
-                    .value
-                    .trim();
-
-
-            const password =
-                $("#login-password")
-                    .value;
-
-
-            try {
-
-                const data =
-                    await api(
-                        "/api/login",
-                        {
-                            method: "POST",
-
-                            body:
-                                JSON.stringify({
-                                    identifier,
-                                    password
-                                })
-                        }
-                    );
-
-
-                await enterApp(
-                    data.user
-                );
-
-
-            } catch (error) {
-
-                showToast(
-                    error.message,
-                    "error"
-                );
-
-            }
-
-        }
-    );
-
-
-/* =========================================================
-   REGISTER
-========================================================= */
-
-$("#register-form")
-    .addEventListener(
-        "submit",
-        async (event) => {
-
-            event.preventDefault();
-
-
-            const payload = {
-
-                username:
-                    $("#reg-username")
-                        .value
-                        .trim(),
-
-                display_name:
-                    $("#reg-display-name")
-                        .value
-                        .trim(),
-
-                email:
-                    $("#reg-email")
-                        .value
-                        .trim(),
-
-                phone:
-                    $("#reg-phone")
-                        .value
-                        .trim(),
-
-                password:
-                    $("#reg-password")
-                        .value
-
-            };
-
-
-            try {
-
-                const data =
-                    await api(
-                        "/api/register",
-                        {
-                            method: "POST",
-
-                            body:
-                                JSON.stringify(
-                                    payload
-                                )
-                        }
-                    );
-
-
-                await enterApp(
-                    data.user
-                );
-
-
-            } catch (error) {
-
-                showToast(
-                    error.message,
-                    "error"
-                );
-
-            }
-
-        }
-    );
-
-
-/* =========================================================
-   ENTER APPLICATION
-========================================================= */
-
-async function enterApp(user) {
-
-    state.me = user;
-
-
-    $("#auth-view")
-        .classList
-        .add("hidden");
-
-
-    $("#app-view")
-        .classList
-        .remove("hidden");
-
-
-    connectSocket();
-
-
-    await loadChats();
-
-}
-
-
-/* =========================================================
-   SESSION CHECK
-========================================================= */
-
-async function checkSession() {
-
-    try {
-
-        const data =
-            await api(
-                "/api/me"
-            );
-
-
-        await enterApp(
-            data.user
-        );
-
-
-    } catch {
-
-        showAuth("login");
-
-    }
-
-}
-
-
-checkSession();
-
-
-/* =========================================================
-   SOCKET CONNECTION
-========================================================= */
-
-function connectSocket() {
-
     if (state.socket) {
 
-        state.socket.disconnect();
+        try {
+
+            state.socket.disconnect();
+
+        } catch {
+
+            // Ignore old socket error
+
+        }
 
     }
 
 
     state.socket =
         io(
+            window.location.origin,
             {
                 transports: [
                     "websocket",
@@ -615,110 +443,42 @@ function connectSocket() {
 
                 reconnection: true,
 
-                reconnectionAttempts: Infinity,
+                reconnectionAttempts:
+                    Infinity,
 
-                reconnectionDelay: 1000,
+                reconnectionDelay:
+                    1000,
 
-                timeout: 10000
+                reconnectionDelayMax:
+                    5000,
+
+                timeout:
+                    20000
             }
         );
 
 
-    /* CONNECT */
+    /* =====================================================
+       CONNECT
+    ====================================================== */
 
     state.socket.on(
         "connect",
         () => {
 
-            state.reconnecting = false;
+            console.log(
+                "Socket connected:",
+                state.socket.id
+            );
+
+
+            state.reconnecting =
+                false;
+
 
             showToast(
-                "Connected",
+                "Server connected",
                 "success"
-            );
-
-
-            if (state.activeChat) {
-
-                markRead();
-
-            }
-
-        }
-    );
-
-
-    /* DISCONNECT */
-
-    state.socket.on(
-        "disconnect",
-        () => {
-
-            state.reconnecting = true;
-
-            showToast(
-                "Connection lost. Reconnecting...",
-                "error"
-            );
-
-        }
-    );
-
-
-    /* CONNECTION ERROR */
-
-    state.socket.on(
-        "connect_error",
-        () => {
-
-            state.reconnecting = true;
-
-        }
-    );
-
-
-    /* MESSAGE */
-
-    state.socket.on(
-        "message:new",
-        handleNewMessage
-    );
-
-
-    /* MESSAGE STATUS */
-
-    state.socket.on(
-        "message:status",
-        handleMessageStatus
-    );
-
-
-    /* TYPING */
-
-    state.socket.on(
-        "typing:update",
-        handleTyping
-    );
-
-
-    /* PRESENCE */
-
-    state.socket.on(
-        "presence:update",
-        handlePresence
-    );
-
-
-    /* SERVER ERROR */
-
-    state.socket.on(
-        "server:error",
-        (data) => {
-
-            showToast(
-                data?.error ||
-                "Server error",
-                "error"
             );
 
         }
@@ -726,130 +486,170 @@ function connectSocket() {
 
 
     /* =====================================================
-       CALL EVENTS
+       DISCONNECT
     ====================================================== */
 
     state.socket.on(
-        "call:incoming",
-        incomingCall
-    );
+        "disconnect",
+        (reason) => {
 
-
-    state.socket.on(
-        "call:started",
-        (data) => {
-
-            state.call = {
-
-                ...data,
-
-                direction: "outgoing"
-
-            };
-
-
-            openCallModal(
-                data,
-                "Calling…"
+            console.warn(
+                "Socket disconnected:",
+                reason
             );
 
 
-            $("#end-call")
-                .classList
-                .remove("hidden");
+            state.reconnecting =
+                true;
 
         }
     );
 
 
+    /* =====================================================
+       CONNECT ERROR
+    ====================================================== */
+
     state.socket.on(
-        "call:accepted",
+        "connect_error",
+        (error) => {
+
+            state.reconnecting =
+                true;
+
+
+            console.error(
+                "Socket connection error:",
+                error
+            );
+
+        }
+    );
+
+
+    /* =====================================================
+       NEW MESSAGE
+    ====================================================== */
+
+    state.socket.on(
+        "message:new",
+        (message) => {
+
+            handleNewMessage(
+                message
+            );
+
+        }
+    );
+
+
+    /* =====================================================
+       MESSAGE STATUS
+    ====================================================== */
+
+    state.socket.on(
+        "message:status",
+        (data) => {
+
+            handleMessageStatus(
+                data
+            );
+
+        }
+    );
+
+
+    /* =====================================================
+       TYPING UPDATE
+    ====================================================== */
+
+    state.socket.on(
+        "typing:update",
+        (data) => {
+
+            handleTyping(
+                data
+            );
+
+        }
+    );
+
+
+    /* =====================================================
+       PRESENCE
+    ====================================================== */
+
+    state.socket.on(
+        "presence:update",
+        (data) => {
+
+            handlePresence(
+                data
+            );
+
+        }
+    );
+
+
+    /* =====================================================
+       INCOMING CALL
+    ====================================================== */
+
+    state.socket.on(
+        "call:start",
+        (data) => {
+
+            handleIncomingCall(
+                data
+            );
+
+        }
+    );
+
+
+    /* =====================================================
+       CALL ACCEPTED
+    ====================================================== */
+
+    state.socket.on(
+        "call:accept",
         async (data) => {
 
-            if (
-                !state.call ||
-                state.call.call_id !==
-                    data.call_id
-            ) {
-
-                return;
-
-            }
-
-
-            $("#call-status")
-                .textContent =
-                "Connecting…";
-
-
-            try {
-
-                await createPeerConnection();
-
-                await makeOffer();
-
-            } catch (error) {
-
-                showToast(
-                    error.message ||
-                    "Could not start call.",
-                    "error"
-                );
-
-
-                endCallLocal();
-
-            }
+            await handleCallAccepted(
+                data
+            );
 
         }
     );
 
 
+    /* =====================================================
+       CALL REJECTED
+    ====================================================== */
+
     state.socket.on(
-        "call:rejected",
+        "call:reject",
         (data) => {
 
-            if (
-                state.call?.call_id ===
-                data.call_id
-            ) {
-
-                $("#call-status")
-                    .textContent =
-                    "Call rejected";
-
-
-                setTimeout(
-                    endCallLocal,
-                    1000
-                );
-
-            }
+            handleCallRejected(
+                data
+            );
 
         }
     );
 
 
+    /* =====================================================
+       CALL ENDED
+    ====================================================== */
+
     state.socket.on(
-        "call:ended",
+        "call:end",
         (data) => {
 
-            if (
-                state.call?.call_id ===
-                data.call_id
-            ) {
-
-                $("#call-status")
-                    .textContent =
-                    "Call ended";
-
-
-                setTimeout(
-                    endCallLocal,
-                    500
-                );
-
-            }
+            handleCallEnded(
+                data
+            );
 
         }
     );
@@ -863,70 +663,9 @@ function connectSocket() {
         "webrtc:offer",
         async (data) => {
 
-            if (
-                !state.call ||
-                state.call.call_id !==
-                    data.call_id
-            ) {
-
-                return;
-
-            }
-
-
-            try {
-
-                await createPeerConnection();
-
-
-                await state.pc
-                    .setRemoteDescription(
-                        new RTCSessionDescription(
-                            data.offer
-                        )
-                    );
-
-
-                await flushCandidates();
-
-
-                const answer =
-                    await state.pc
-                        .createAnswer();
-
-
-                await state.pc
-                    .setLocalDescription(
-                        answer
-                    );
-
-
-                state.socket.emit(
-                    "webrtc:answer",
-                    {
-                        call_id:
-                            data.call_id,
-
-                        answer:
-                            state.pc.localDescription
-                    }
-                );
-
-
-            } catch (error) {
-
-                console.error(
-                    "WebRTC offer error:",
-                    error
-                );
-
-
-                showToast(
-                    "WebRTC offer failed.",
-                    "error"
-                );
-
-            }
+            await handleWebRTCOffer(
+                data
+            );
 
         }
     );
@@ -940,44 +679,9 @@ function connectSocket() {
         "webrtc:answer",
         async (data) => {
 
-            if (
-                !state.pc ||
-                state.call?.call_id !==
-                    data.call_id
-            ) {
-
-                return;
-
-            }
-
-
-            try {
-
-                await state.pc
-                    .setRemoteDescription(
-                        new RTCSessionDescription(
-                            data.answer
-                        )
-                    );
-
-
-                await flushCandidates();
-
-
-            } catch (error) {
-
-                console.error(
-                    "WebRTC answer error:",
-                    error
-                );
-
-
-                showToast(
-                    "WebRTC answer failed.",
-                    "error"
-                );
-
-            }
+            await handleWebRTCAnswer(
+                data
+            );
 
         }
     );
@@ -991,51 +695,9 @@ function connectSocket() {
         "webrtc:ice",
         async (data) => {
 
-            if (
-                !state.call ||
-                state.call.call_id !==
-                    data.call_id ||
-                !data.candidate
-            ) {
-
-                return;
-
-            }
-
-
-            try {
-
-                const candidate =
-                    new RTCIceCandidate(
-                        data.candidate
-                    );
-
-
-                if (
-                    state.pc &&
-                    state.pc.remoteDescription
-                ) {
-
-                    await state.pc
-                        .addIceCandidate(
-                            candidate
-                        );
-
-                } else {
-
-                    state.pendingCandidates
-                        .push(candidate);
-
-                }
-
-            } catch (error) {
-
-                console.warn(
-                    "ICE candidate error:",
-                    error
-                );
-
-            }
+            await handleWebRTCIce(
+                data
+            );
 
         }
     );
@@ -1044,739 +706,92 @@ function connectSocket() {
 
 
 /* =========================================================
-   LOAD CHATS
+   HANDLE NEW MESSAGE
 ========================================================= */
 
-async function loadChats() {
+function handleNewMessage(
+    message
+) {
 
-    try {
-
-        const data =
-            await api(
-                "/api/chats"
-            );
-
-
-        state.chats =
-            Array.isArray(data.chats)
-                ? data.chats
-                : [];
-
-
-        renderChatList();
-
-
-    } catch (error) {
-
-        showToast(
-            error.message,
-            "error"
-        );
-
-    }
-
-}
-
-
-/* =========================================================
-   RENDER CHAT LIST
-========================================================= */
-
-function renderChatList() {
-
-    const element =
-        $("#chat-list");
-
-
-    if (!state.chats.length) {
-
-        element.innerHTML = `
-            <div
-                class="muted"
-                style="
-                    padding:24px;
-                    text-align:center;
-                    line-height:1.6;
-                ">
-                No chats yet.<br>
-                Search a username above.
-            </div>
-        `;
-
+    if (!message) {
         return;
-
     }
 
 
-    element.innerHTML =
-        state.chats
-            .map((chat) => {
+    const conversationId =
+        message.conversation_id;
 
-                const active =
-                    state.activeChat &&
-                    state.activeChat.conversation_id ===
-                        chat.conversation_id;
 
+    if (!conversationId) {
+        return;
+    }
 
-                const last =
-                    chat.last_message;
 
-
-                return `
-
-                    <div
-                        class="chat-item
-                        ${active ? "active" : ""}"
-                        data-id="${chat.conversation_id}">
-
-                        <img
-                            class="avatar"
-                            src="${escapeHtml(
-                                avatarUrl(chat.user)
-                            )}"
-                            alt="">
-
-                        <div class="chat-meta">
-
-                            <div class="chat-top">
-
-                                <span class="chat-name">
-                                    ${escapeHtml(
-                                        chat.user.display_name
-                                    )}
-                                </span>
-
-                                <span class="chat-time">
-                                    ${
-                                        last
-                                            ? formatTime(
-                                                last.created_at
-                                            )
-                                            : ""
-                                    }
-                                </span>
-
-                            </div>
-
-
-                            <div class="chat-preview">
-
-                                ${
-                                    last
-                                        ? escapeHtml(
-                                            last.message
-                                        )
-                                        : "Start chatting"
-                                }
-
-                            </div>
-
-                        </div>
-
-
-                        ${
-                            chat.unread_count
-                                ? `
-                                    <span class="badge">
-                                        ${
-                                            chat.unread_count > 99
-                                                ? "99+"
-                                                : chat.unread_count
-                                        }
-                                    </span>
-                                `
-                                : ""
-                        }
-
-                    </div>
-
-                `;
-
-            })
-            .join("");
-
-
-    element
-        .querySelectorAll(".chat-item")
-        .forEach((item) => {
-
-            item.addEventListener(
-                "click",
-                () => {
-
-                    const conversation =
-                        state.chats.find(
-                            (chat) =>
-                                chat.conversation_id ===
-                                Number(
-                                    item.dataset.id
-                                )
-                        );
-
-
-                    if (conversation) {
-
-                        openChat(
-                            conversation
-                        );
-
-                    }
-
-                }
-            );
-
-        });
-
-}
-
-
-/* =========================================================
-   USER SEARCH
-========================================================= */
-
-$("#user-search")
-    .addEventListener(
-        "input",
-        async (event) => {
-
-            const query =
-                event.target.value
-                    .trim();
-
-
-            const box =
-                $("#search-results");
-
-
-            if (query.length < 2) {
-
-                box.classList.add(
-                    "hidden"
-                );
-
-                return;
-
-            }
-
-
-            try {
-
-                const data =
-                    await api(
-                        "/api/users/search?q=" +
-                        encodeURIComponent(query)
-                    );
-
-
-                if (
-                    !data.users ||
-                    !data.users.length
-                ) {
-
-                    box.innerHTML = `
-                        <div class="result muted">
-                            No user found
-                        </div>
-                    `;
-
-                } else {
-
-                    box.innerHTML =
-                        data.users
-                            .map((user) => {
-
-                                return `
-
-                                    <div
-                                        class="result"
-                                        data-user-id="${user.id}">
-
-                                        <img
-                                            class="avatar"
-                                            src="${escapeHtml(
-                                                avatarUrl(user)
-                                            )}"
-                                            alt="">
-
-                                        <div>
-
-                                            <strong>
-                                                ${escapeHtml(
-                                                    user.display_name
-                                                )}
-                                            </strong>
-
-                                            <div class="muted">
-                                                @${escapeHtml(
-                                                    user.username
-                                                )}
-                                            </div>
-
-                                        </div>
-
-                                    </div>
-
-                                `;
-
-                            })
-                            .join("");
-
-
-                    box
-                        .querySelectorAll(
-                            ".result[data-user-id]"
-                        )
-                        .forEach((item) => {
-
-                            item.addEventListener(
-                                "click",
-                                () => {
-
-                                    startChat(
-                                        Number(
-                                            item.dataset.userId
-                                        )
-                                    );
-
-                                }
-                            );
-
-                        });
-
-                }
-
-
-                box.classList.remove(
-                    "hidden"
-                );
-
-
-            } catch (error) {
-
-                showToast(
-                    error.message,
-                    "error"
-                );
-
-            }
-
-        }
-    );
-
-
-/* =========================================================
-   START CHAT
-========================================================= */
-
-async function startChat(userId) {
-
-    try {
-
-        const data =
-            await api(
-                `/api/chats/${userId}`,
-                {
-                    method: "POST",
-
-                    body: "{}"
-                }
-            );
-
-
-        $("#user-search")
-            .value = "";
-
-
-        $("#search-results")
-            .classList
-            .add("hidden");
-
-
-        let chat =
-            state.chats.find(
-                (item) =>
-                    item.conversation_id ===
-                    data.conversation_id
-            );
-
-
-        if (!chat) {
-
-            chat = {
-
-                conversation_id:
-                    data.conversation_id,
-
-                user:
-                    data.user,
-
-                last_message:
-                    null,
-
-                unread_count:
-                    0
-
-            };
-
-
-            state.chats.unshift(
-                chat
-            );
-
-        } else {
-
-            chat.user =
-                data.user;
-
-        }
-
-
-        await openChat(chat);
-
-
-        renderChatList();
-
-
-    } catch (error) {
-
-        showToast(
-            error.message,
-            "error"
+    let list =
+        state.messages.get(
+            conversationId
         );
 
-    }
 
-}
+    if (!list) {
 
-
-/* =========================================================
-   OPEN CHAT
-========================================================= */
-
-async function openChat(chat) {
-
-    state.activeChat =
-        chat;
-
-
-    $("#empty-chat")
-        .classList
-        .add("hidden");
-
-
-    $("#active-chat")
-        .classList
-        .remove("hidden");
-
-
-    $("#app-view")
-        .classList
-        .add("chat-open");
-
-
-    renderChatHeader();
-
-
-    $("#messages")
-        .innerHTML = "";
-
-
-    try {
-
-        const data =
-            await api(
-                `/api/chats/${chat.conversation_id}/messages?limit=100`
-            );
-
+        list = [];
 
         state.messages.set(
-            chat.conversation_id,
-            data.messages || []
-        );
-
-
-        renderMessages();
-
-
-        markRead();
-
-
-        await loadChats();
-
-
-    } catch (error) {
-
-        showToast(
-            error.message,
-            "error"
-        );
-
-    }
-
-}
-
-
-/* =========================================================
-   CHAT HEADER
-========================================================= */
-
-function renderChatHeader() {
-
-    if (!state.activeChat) {
-
-        return;
-
-    }
-
-
-    const user =
-        state.activeChat.user;
-
-
-    $("#chat-avatar")
-        .src =
-        avatarUrl(user);
-
-
-    $("#chat-name")
-        .textContent =
-        user.display_name;
-
-
-    $("#chat-presence")
-        .textContent =
-        user.online
-            ? "online"
-            : lastSeenText(user);
-
-
-    $("#chat-presence")
-        .classList
-        .toggle(
-            "online",
-            Boolean(user.online)
-        );
-
-}
-
-
-/* =========================================================
-   RENDER MESSAGES
-========================================================= */
-
-function renderMessages() {
-
-    if (!state.activeChat) {
-
-        return;
-
-    }
-
-
-    const list =
-        state.messages.get(
-            state.activeChat.conversation_id
-        ) || [];
-
-
-    const element =
-        $("#messages");
-
-
-    let html = "";
-
-    let previousDate = "";
-
-
-    for (const message of list) {
-
-        const date =
-            formatDate(
-                message.created_at
-            );
-
-
-        if (
-            date &&
-            date !== previousDate
-        ) {
-
-            html += `
-                <div class="date-separator">
-                    ${escapeHtml(date)}
-                </div>
-            `;
-
-
-            previousDate =
-                date;
-
-        }
-
-
-        const mine =
-            message.sender_id ===
-            state.me.id;
-
-
-        let ticks = "";
-
-
-        if (mine) {
-
-            const read =
-                Boolean(
-                    message.read_at
-                );
-
-
-            const delivered =
-                Boolean(
-                    message.delivered_at
-                );
-
-
-            if (read) {
-
-                ticks = `
-                    <span class="ticks read">
-                        ✓✓
-                    </span>
-                `;
-
-            } else if (delivered) {
-
-                ticks = `
-                    <span class="ticks">
-                        ✓✓
-                    </span>
-                `;
-
-            } else {
-
-                ticks = `
-                    <span class="ticks">
-                        ✓
-                    </span>
-                `;
-
-            }
-
-        }
-
-
-        html += `
-
-            <div
-                class="message-row
-                ${mine ? "mine" : ""}"
-                data-message-id="${message.id}">
-
-                <div class="bubble">
-
-                    ${escapeHtml(
-                        message.message
-                    )}
-
-                    <span class="msg-time">
-
-                        ${formatTime(
-                            message.created_at
-                        )}
-
-                        ${ticks}
-
-                    </span>
-
-                </div>
-
-            </div>
-
-        `;
-
-    }
-
-
-    element.innerHTML =
-        html;
-
-
-    requestAnimationFrame(
-        () => {
-
-            element.scrollTop =
-                element.scrollHeight;
-
-        }
-    );
-
-}
-
-
-/* =========================================================
-   NEW MESSAGE
-========================================================= */
-
-function handleNewMessage(message) {
-
-    let chat =
-        state.chats.find(
-            (item) =>
-                item.conversation_id ===
-                message.conversation_id
-        );
-
-
-    if (!chat) {
-
-        loadChats();
-
-        return;
-
-    }
-
-
-    const list =
-        state.messages.get(
-            message.conversation_id
-        ) || [];
-
-
-    if (
-        !list.some(
-            (item) =>
-                item.id === message.id
-        )
-    ) {
-
-        list.push(
-            message
-        );
-
-        state.messages.set(
-            message.conversation_id,
+            conversationId,
             list
         );
 
     }
 
 
-    chat.last_message =
-        message;
+    const alreadyExists =
+        list.some(
+            (item) =>
+                item.id === message.id
+        );
 
 
-    if (
-        message.sender_id !==
-            state.me.id &&
-        (
-            !state.activeChat ||
-            state.activeChat.conversation_id !==
-                message.conversation_id
-        )
-    ) {
+    if (!alreadyExists) {
 
-        chat.unread_count =
-            (chat.unread_count || 0) + 1;
+        list.push(
+            message
+        );
+
+    }
+
+
+    const chat =
+        state.chats.find(
+            (item) =>
+                item.conversation_id ===
+                conversationId
+        );
+
+
+    if (chat) {
+
+        chat.last_message =
+            message;
+
+
+        if (
+            message.sender_id !==
+                state.me?.id &&
+            (
+                !state.activeChat ||
+                state.activeChat.conversation_id !==
+                    conversationId
+            )
+        ) {
+
+            chat.unread_count =
+                (
+                    chat.unread_count ||
+                    0
+                ) + 1;
+
+        }
 
     }
 
@@ -1784,7 +799,7 @@ function handleNewMessage(message) {
     if (
         state.activeChat &&
         state.activeChat.conversation_id ===
-            message.conversation_id
+            conversationId
     ) {
 
         renderMessages();
@@ -1792,7 +807,7 @@ function handleNewMessage(message) {
 
         if (
             message.receiver_id ===
-            state.me.id
+            state.me?.id
         ) {
 
             markRead();
@@ -1807,11 +822,11 @@ function handleNewMessage(message) {
 
     if (
         message.sender_id !==
-            state.me.id &&
+            state.me?.id &&
         (
             !state.activeChat ||
             state.activeChat.conversation_id !==
-                message.conversation_id
+                conversationId
         )
     ) {
 
@@ -1829,7 +844,14 @@ function handleNewMessage(message) {
    MESSAGE STATUS
 ========================================================= */
 
-function handleMessageStatus(data) {
+function handleMessageStatus(
+    data
+) {
+
+    if (!data) {
+        return;
+    }
+
 
     const list =
         state.messages.get(
@@ -1846,9 +868,7 @@ function handleMessageStatus(data) {
 
 
     if (!message) {
-
         return;
-
     }
 
 
@@ -1913,7 +933,8 @@ function markRead() {
         "chat:read",
         {
             conversation_id:
-                state.activeChat.conversation_id
+                state.activeChat
+                    .conversation_id
         }
     );
 
@@ -1922,7 +943,8 @@ function markRead() {
         state.chats.find(
             (item) =>
                 item.conversation_id ===
-                state.activeChat.conversation_id
+                state.activeChat
+                    .conversation_id
         );
 
 
@@ -1940,63 +962,219 @@ function markRead() {
 
 
 /* =========================================================
-   SEND MESSAGE
+   SEND MESSAGE - FIXED
 ========================================================= */
 
-$("#message-form")
-    .addEventListener(
-        "submit",
-        (event) => {
+function sendMessage() {
 
-            event.preventDefault();
+    const input =
+        $("#message-input");
 
 
-            const text =
-                $("#message-input")
-                    .value
-                    .trim();
+    if (!input) {
+        return;
+    }
+
+
+    const text =
+        input.value.trim();
+
+
+    if (!text) {
+        return;
+    }
+
+
+    if (!state.activeChat) {
+
+        showToast(
+            "Pehle chat select karo.",
+            "error"
+        );
+
+        return;
+
+    }
+
+
+    if (
+        !state.socket
+    ) {
+
+        showToast(
+            "Server connection nahi hai.",
+            "error"
+        );
+
+        initializeSocket();
+
+        return;
+
+    }
+
+
+    if (
+        !state.socket.connected
+    ) {
+
+        showToast(
+            "Server se connection nahi hai. Reconnecting...",
+            "error"
+        );
+
+
+        try {
+
+            state.socket.connect();
+
+        } catch (error) {
+
+            console.error(
+                "Socket reconnect error:",
+                error
+            );
+
+        }
+
+        return;
+
+    }
+
+
+    const receiverId =
+        state.activeChat
+            ?.user
+            ?.id;
+
+
+    if (!receiverId) {
+
+        showToast(
+            "Receiver user ID nahi mili.",
+            "error"
+        );
+
+        console.error(
+            "Invalid active chat:",
+            state.activeChat
+        );
+
+        return;
+
+    }
+
+
+    const payload = {
+
+        receiver_id:
+            receiverId,
+
+        message:
+            text
+
+    };
+
+
+    console.log(
+        "Sending message:",
+        payload
+    );
+
+
+    state.socket.emit(
+        "chat:send",
+        payload,
+        (response) => {
+
+            console.log(
+                "chat:send response:",
+                response
+            );
 
 
             if (
-                !text ||
-                !state.activeChat ||
-                !state.socket ||
-                !state.socket.connected
+                response &&
+                response.error
             ) {
+
+                showToast(
+                    response.error,
+                    "error"
+                );
 
                 return;
 
             }
 
-
-            state.socket.emit(
-                "chat:send",
-                {
-                    receiver_id:
-                        state.activeChat.user.id,
-
-                    message:
-                        text
-                }
-            );
-
-
-            $("#message-input")
-                .value = "";
-
-
-            stopTyping();
-
         }
     );
 
 
+    input.value =
+        "";
+
+
+    input.focus();
+
+
+    stopTyping();
+
+}
+
+
 /* =========================================================
-   TYPING
+   MESSAGE FORM
 ========================================================= */
 
-$("#message-input")
-    .addEventListener(
+function initializeMessageForm() {
+
+    const form =
+        $("#message-form");
+
+
+    if (!form) {
+
+        console.warn(
+            "#message-form nahi mila."
+        );
+
+        return;
+
+    }
+
+
+    form.addEventListener(
+        "submit",
+        (event) => {
+
+            event.preventDefault();
+
+            event.stopPropagation();
+
+            sendMessage();
+
+        }
+    );
+
+}
+
+
+/* =========================================================
+   TYPING INPUT
+========================================================= */
+
+function initializeTyping() {
+
+    const input =
+        $("#message-input");
+
+
+    if (!input) {
+        return;
+    }
+
+
+    input.addEventListener(
         "input",
         () => {
 
@@ -2011,7 +1189,9 @@ $("#message-input")
             }
 
 
-            if (!state.typingActive) {
+            if (
+                !state.typingActive
+            ) {
 
                 state.typingActive =
                     true;
@@ -2021,7 +1201,9 @@ $("#message-input")
                     "typing:start",
                     {
                         receiver_id:
-                            state.activeChat.user.id
+                            state.activeChat
+                                .user
+                                .id
                     }
                 );
 
@@ -2035,13 +1217,23 @@ $("#message-input")
 
             state.typingTimer =
                 setTimeout(
-                    stopTyping,
+                    () => {
+
+                        stopTyping();
+
+                    },
                     1000
                 );
 
         }
     );
 
+}
+
+
+/* =========================================================
+   STOP TYPING
+========================================================= */
 
 function stopTyping() {
 
@@ -2056,7 +1248,9 @@ function stopTyping() {
             "typing:stop",
             {
                 receiver_id:
-                    state.activeChat.user.id
+                    state.activeChat
+                        .user
+                        .id
             }
         );
 
@@ -2066,6 +1260,11 @@ function stopTyping() {
     state.typingActive =
         false;
 
+
+    clearTimeout(
+        state.typingTimer
+    );
+
 }
 
 
@@ -2073,42 +1272,66 @@ function stopTyping() {
    HANDLE TYPING
 ========================================================= */
 
-function handleTyping(data) {
+function handleTyping(
+    data
+) {
 
     if (
-        state.activeChat &&
-        data.conversation_id ===
-            state.activeChat.conversation_id
+        !state.activeChat ||
+        !data
     ) {
 
-        $("#typing-bar")
-            .classList
-            .toggle(
-                "hidden",
-                !data.typing
+        return;
+
+    }
+
+
+    if (
+        data.conversation_id !==
+        state.activeChat
+            .conversation_id
+    ) {
+
+        return;
+
+    }
+
+
+    const typingBar =
+        $("#typing-bar");
+
+
+    if (!typingBar) {
+        return;
+    }
+
+
+    typingBar.classList.toggle(
+        "hidden",
+        !data.typing
+    );
+
+
+    if (data.typing) {
+
+        clearTimeout(
+            state.typingTimer
+        );
+
+
+        state.typingTimer =
+            setTimeout(
+                () => {
+
+                    typingBar
+                        .classList
+                        .add(
+                            "hidden"
+                        );
+
+                },
+                2500
             );
-
-
-        if (data.typing) {
-
-            clearTimeout(
-                state.typingTimer
-            );
-
-
-            state.typingTimer =
-                setTimeout(
-                    () => {
-
-                        $("#typing-bar")
-                            .classList
-                            .add("hidden");
-
-                    },
-                    2500
-                );
-
-        }
 
     }
 
@@ -2119,11 +1342,19 @@ function handleTyping(data) {
    PRESENCE
 ========================================================= */
 
-function handlePresence(data) {
+function handlePresence(
+    data
+) {
+
+    if (!data) {
+        return;
+    }
+
 
     const chat =
         state.chats.find(
             (item) =>
+                item.user &&
                 item.user.id ===
                 data.user_id
         );
@@ -2148,6 +1379,7 @@ function handlePresence(data) {
 
     if (
         state.activeChat &&
+        state.activeChat.user &&
         state.activeChat.user.id ===
             data.user_id
     ) {
@@ -2176,325 +1408,200 @@ function handlePresence(data) {
 
 
 /* =========================================================
-   LOGOUT
+   WEBRTC CONFIG
 ========================================================= */
 
-$("#logout-btn")
-    .addEventListener(
-        "click",
-        async () => {
+const RTC_CONFIG = {
 
-            try {
+    iceServers: [
 
-                await api(
-                    "/api/logout",
-                    {
-                        method: "POST",
+        {
+            urls:
+                "stun:stun.l.google.com:19302"
+        },
 
-                        body: "{}"
-                    }
-                );
-
-            } catch {
-
-                // Ignore logout API errors.
-
-            }
-
-
-            if (state.socket) {
-
-                state.socket.disconnect();
-
-            }
-
-
-            location.reload();
-
+        {
+            urls:
+                "stun:stun1.l.google.com:19302"
         }
-    );
+
+    ]
+
+};
 
 
 /* =========================================================
-   PROFILE OPEN
+   CREATE PEER CONNECTION
 ========================================================= */
 
-$("#profile-btn")
-    .addEventListener(
-        "click",
-        () => {
+function createPeerConnection() {
 
-            if (!state.me) {
+    if (state.pc) {
 
-                return;
+        try {
 
-            }
+            state.pc.close();
 
+        } catch {
 
-            $("#profile-username")
-                .textContent =
-                "@" +
-                state.me.username;
-
-
-            $("#profile-display-name")
-                .value =
-                state.me.display_name;
-
-
-            $("#profile-preview-img")
-                .src =
-                avatarUrl(state.me);
-
-
-            $("#profile-modal")
-                .classList
-                .remove("hidden");
+            // Ignore
 
         }
-    );
+
+    }
 
 
-/* =========================================================
-   CLOSE MODALS
-========================================================= */
-
-document
-    .querySelectorAll("[data-close]")
-    .forEach((button) => {
-
-        button.addEventListener(
-            "click",
-            () => {
-
-                const id =
-                    button.dataset.close;
+    state.pendingCandidates =
+        [];
 
 
-                const modal =
-                    document.getElementById(
-                        id
-                    );
-
-
-                if (modal) {
-
-                    modal.classList.add(
-                        "hidden"
-                    );
-
-                }
-
-            }
+    const pc =
+        new RTCPeerConnection(
+            RTC_CONFIG
         );
 
-    });
+
+    state.pc =
+        pc;
 
 
-/* =========================================================
-   PROFILE PHOTO PREVIEW
-========================================================= */
-
-$("#profile-photo")
-    .addEventListener(
-        "change",
+    pc.onicecandidate =
         (event) => {
 
-            const file =
-                event.target.files[0];
-
-
-            if (!file) {
+            if (
+                !event.candidate ||
+                !state.socket ||
+                !state.socket.connected ||
+                !state.call
+            ) {
 
                 return;
+
+            }
+
+
+            state.socket.emit(
+                "webrtc:ice",
+                {
+
+                    call_id:
+                        state.call.call_id,
+
+                    candidate:
+                        event.candidate
+
+                }
+            );
+
+        };
+
+
+    pc.ontrack =
+        (event) => {
+
+            const video =
+                $("#remote-video");
+
+
+            if (!video) {
+                return;
+            }
+
+
+            if (
+                !state.remoteStream
+            ) {
+
+                state.remoteStream =
+                    new MediaStream();
+
+            }
+
+
+            state.remoteStream.addTrack(
+                event.track
+            );
+
+
+            video.srcObject =
+                state.remoteStream;
+
+
+            video.autoplay =
+                true;
+
+            video.playsInline =
+                true;
+
+
+            const playPromise =
+                video.play();
+
+
+            if (
+                playPromise &&
+                typeof playPromise.catch ===
+                    "function"
+            ) {
+
+                playPromise.catch(
+                    () => {}
+                );
+
+            }
+
+        };
+
+
+    pc.onconnectionstatechange =
+        () => {
+
+            console.log(
+                "WebRTC connection:",
+                pc.connectionState
+            );
+
+
+            if (
+                pc.connectionState ===
+                    "connected"
+            ) {
+
+                showToast(
+                    "Call connected",
+                    "success"
+                );
 
             }
 
 
             if (
-                !file.type.startsWith(
-                    "image/"
-                )
+                pc.connectionState ===
+                    "failed"
             ) {
 
                 showToast(
-                    "Please select an image.",
-                    "error"
-                );
-
-                event.target.value = "";
-
-                return;
-
-            }
-
-
-            $("#profile-preview-img")
-                .src =
-                URL.createObjectURL(
-                    file
-                );
-
-        }
-    );
-
-
-/* =========================================================
-   PROFILE SAVE
-========================================================= */
-
-$("#profile-form")
-    .addEventListener(
-        "submit",
-        async (event) => {
-
-            event.preventDefault();
-
-
-            const formData =
-                new FormData();
-
-
-            formData.append(
-                "display_name",
-                $("#profile-display-name")
-                    .value
-                    .trim()
-            );
-
-
-            const file =
-                $("#profile-photo")
-                    .files[0];
-
-
-            if (file) {
-
-                formData.append(
-                    "profile_photo",
-                    file
-                );
-
-            }
-
-
-            try {
-
-                const data =
-                    await api(
-                        "/api/profile",
-                        {
-                            method: "POST",
-
-                            body:
-                                formData
-                        }
-                    );
-
-
-                state.me =
-                    data.user;
-
-
-                $("#profile-modal")
-                    .classList
-                    .add("hidden");
-
-
-                showToast(
-                    "Profile updated",
-                    "success"
-                );
-
-
-                await loadChats();
-
-
-                if (state.activeChat) {
-
-                    renderChatHeader();
-
-                }
-
-
-            } catch (error) {
-
-                showToast(
-                    error.message,
+                    "Call connection failed.",
                     "error"
                 );
 
             }
 
-        }
-    );
+        };
 
 
-/* =========================================================
-   MOBILE BACK
-========================================================= */
+    return pc;
 
-$("#back-chat-btn")
-    .addEventListener(
-        "click",
-        () => {
-
-            $("#app-view")
-                .classList
-                .remove("chat-open");
-
-
-            state.activeChat =
-                null;
-
-
-            $("#active-chat")
-                .classList
-                .add("hidden");
-
-
-            $("#empty-chat")
-                .classList
-                .remove("hidden");
-
-
-            renderChatList();
-
-        }
-    );
+}
 
 
 /* =========================================================
    START CALL
 ========================================================= */
 
-$("#voice-call-btn")
-    .addEventListener(
-        "click",
-        () => {
-
-            startCall(
-                "voice"
-            );
-
-        }
-    );
-
-
-$("#video-call-btn")
-    .addEventListener(
-        "click",
-        () => {
-
-            startCall(
-                "video"
-            );
-
-        }
-    );
-
-
-async function startCall(type) {
+async function startCall(
+    type
+) {
 
     if (
         !state.activeChat ||
@@ -2513,12 +1620,22 @@ async function startCall(type) {
 
 
     if (
+        state.pc ||
+        state.localStream
+    ) {
+
+        endCallLocal();
+
+    }
+
+
+    if (
         !navigator.mediaDevices ||
         !navigator.mediaDevices.getUserMedia
     ) {
 
         showToast(
-            "Camera/microphone is not supported by this browser.",
+            "Camera/microphone browser mein supported nahi hai.",
             "error"
         );
 
@@ -2533,22 +1650,76 @@ async function startCall(type) {
             await navigator.mediaDevices
                 .getUserMedia(
                     {
-                        audio: true,
+
+                        audio:
+                            true,
 
                         video:
-                            type === "video"
+                            type ===
+                            "video"
+
                     }
                 );
+
+
+        const localVideo =
+            $("#local-video");
+
+
+        if (localVideo) {
+
+            localVideo.srcObject =
+                state.localStream;
+
+            localVideo.muted =
+                true;
+
+            localVideo.autoplay =
+                true;
+
+            localVideo.playsInline =
+                true;
+
+        }
+
+
+        state.call = {
+
+            call_id:
+                null,
+
+            type:
+                type,
+
+            role:
+                "caller",
+
+            peer_id:
+                state.activeChat
+                    .user
+                    .id
+
+        };
+
+
+        showCallUI(
+            type,
+            false
+        );
 
 
         state.socket.emit(
             "call:start",
             {
+
                 receiver_id:
-                    state.activeChat.user.id,
+                    state.activeChat
+                        .user
+                        .id,
 
                 call_type:
                     type
+
             }
         );
 
@@ -2562,140 +1733,56 @@ async function startCall(type) {
 
 
         showToast(
-            "Camera/microphone permission is required.",
+            "Camera/microphone permission required hai.",
             "error"
         );
 
+
+        endCallLocal();
+
     }
 
 }
 
 
 /* =========================================================
-   OPEN CALL MODAL
+   HANDLE INCOMING CALL
 ========================================================= */
 
-function openCallModal(
-    data,
-    status
+function handleIncomingCall(
+    data
 ) {
 
-    let user;
-
-
-    if (
-        data.direction ===
-        "outgoing"
-    ) {
-
-        user =
-            state.activeChat?.user;
-
-    } else {
-
-        user =
-            data.caller;
-
-    }
-
-
-    if (!user) {
-
+    if (!data) {
         return;
-
     }
 
 
-    $("#call-avatar")
-        .src =
-        avatarUrl(user);
-
-
-    $("#call-name")
-        .textContent =
-        user.display_name;
-
-
-    $("#call-status")
-        .textContent =
-        status;
-
-
-    $("#call-modal")
-        .classList
-        .remove("hidden");
-
-
-    $("#remote-video-wrap")
-        .classList
-        .toggle(
-            "hidden",
-            data.call_type !== "video"
-        );
-
-
-    $("#accept-call")
-        .classList
-        .add("hidden");
-
-
-    $("#reject-call")
-        .classList
-        .add("hidden");
-
-
-    $("#end-call")
-        .classList
-        .add("hidden");
-
-}
-
-
-/* =========================================================
-   INCOMING CALL
-========================================================= */
-
-function incomingCall(data) {
-
-    if (state.call) {
-
-        state.socket.emit(
-            "call:reject",
-            {
-                call_id:
-                    data.call_id
-            }
-        );
-
-        return;
-
-    }
+    state.incomingCall =
+        data;
 
 
     state.call = {
 
-        ...data,
+        call_id:
+            data.call_id,
 
-        direction:
-            "incoming"
+        type:
+            data.call_type ||
+            "voice",
+
+        role:
+            "receiver",
+
+        peer_id:
+            data.caller_id
 
     };
 
 
-    openCallModal(
-        state.call,
-        `Incoming ${data.call_type} call`
+    showIncomingCallUI(
+        data
     );
-
-
-    $("#accept-call")
-        .classList
-        .remove("hidden");
-
-
-    $("#reject-call")
-        .classList
-        .remove("hidden");
 
 }
 
@@ -2704,316 +1791,237 @@ function incomingCall(data) {
    ACCEPT CALL
 ========================================================= */
 
-$("#accept-call")
-    .addEventListener(
-        "click",
-        async () => {
+async function acceptCall() {
 
-            if (!state.call) {
+    if (
+        !state.incomingCall ||
+        !state.socket ||
+        !state.socket.connected
+    ) {
 
-                return;
+        return;
 
-            }
-
-
-            try {
-
-                state.localStream =
-                    await navigator.mediaDevices
-                        .getUserMedia(
-                            {
-                                audio: true,
-
-                                video:
-                                    state.call.call_type ===
-                                    "video"
-                            }
-                        );
+    }
 
 
-                await createPeerConnection();
+    const data =
+        state.incomingCall;
 
 
-                state.socket.emit(
-                    "call:accept",
+    try {
+
+        state.localStream =
+            await navigator.mediaDevices
+                .getUserMedia(
                     {
-                        call_id:
-                            state.call.call_id
+
+                        audio:
+                            true,
+
+                        video:
+                            data.call_type ===
+                            "video"
+
                     }
                 );
 
 
-                $("#accept-call")
-                    .classList
-                    .add("hidden");
+        const localVideo =
+            $("#local-video");
 
 
-                $("#reject-call")
-                    .classList
-                    .add("hidden");
+        if (localVideo) {
 
+            localVideo.srcObject =
+                state.localStream;
 
-                $("#end-call")
-                    .classList
-                    .remove("hidden");
+            localVideo.muted =
+                true;
 
+            localVideo.autoplay =
+                true;
 
-                $("#call-status")
-                    .textContent =
-                    "Connecting…";
-
-
-            } catch (error) {
-
-                console.error(
-                    "Accept call error:",
-                    error
-                );
-
-
-                showToast(
-                    "Camera/microphone permission was denied.",
-                    "error"
-                );
-
-
-                state.socket.emit(
-                    "call:reject",
-                    {
-                        call_id:
-                            state.call.call_id
-                    }
-                );
-
-
-                endCallLocal();
-
-            }
+            localVideo.playsInline =
+                true;
 
         }
-    );
+
+
+        state.call = {
+
+            call_id:
+                data.call_id,
+
+            type:
+                data.call_type ||
+                "voice",
+
+            role:
+                "receiver",
+
+            peer_id:
+                data.caller_id
+
+        };
+
+
+        createPeerConnection();
+
+
+        state.localStream
+            .getTracks()
+            .forEach(
+                (track) => {
+
+                    state.pc.addTrack(
+                        track,
+                        state.localStream
+                    );
+
+                }
+            );
+
+
+        state.socket.emit(
+            "call:accept",
+            {
+
+                call_id:
+                    data.call_id
+
+            }
+        );
+
+
+        state.incomingCall =
+            null;
+
+
+        showCallUI(
+            state.call.type,
+            false
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "Accept call error:",
+            error
+        );
+
+
+        showToast(
+            "Camera/microphone permission required hai.",
+            "error"
+        );
+
+
+        rejectCall();
+
+    }
+
+}
 
 
 /* =========================================================
    REJECT CALL
 ========================================================= */
 
-$("#reject-call")
-    .addEventListener(
-        "click",
-        () => {
+function rejectCall() {
 
-            if (state.call) {
+    if (
+        state.socket &&
+        state.socket.connected &&
+        state.incomingCall
+    ) {
 
-                state.socket.emit(
-                    "call:reject",
-                    {
-                        call_id:
-                            state.call.call_id
-                    }
-                );
-
-            }
-
-
-            endCallLocal();
-
-        }
-    );
-
-
-/* =========================================================
-   END CALL
-========================================================= */
-
-$("#end-call")
-    .addEventListener(
-        "click",
-        () => {
-
-            if (state.call) {
-
-                state.socket.emit(
-                    "call:end",
-                    {
-                        call_id:
-                            state.call.call_id
-                    }
-                );
-
-            }
-
-
-            endCallLocal();
-
-        }
-    );
-
-
-/* =========================================================
-   CREATE WEBRTC CONNECTION
-========================================================= */
-
-async function createPeerConnection() {
-
-    if (state.pc) {
-
-        return state.pc;
-
-    }
-
-
-    state.pendingCandidates =
-        [];
-
-
-    state.pc =
-        new RTCPeerConnection(
+        state.socket.emit(
+            "call:reject",
             {
-                iceServers: [
-                    {
-                        urls:
-                            "stun:stun.l.google.com:19302"
-                    }
-                ]
+
+                call_id:
+                    state.incomingCall
+                        .call_id
+
             }
         );
 
+    }
 
-    if (state.localStream) {
 
-        state.localStream
-            .getTracks()
-            .forEach((track) => {
+    state.incomingCall =
+        null;
 
-                state.pc.addTrack(
-                    track,
-                    state.localStream
-                );
+    state.call =
+        null;
 
-            });
+
+    hideCallUI();
+
+}
+
+
+/* =========================================================
+   HANDLE CALL ACCEPTED
+========================================================= */
+
+async function handleCallAccepted(
+    data
+) {
+
+    if (
+        !state.call ||
+        !data ||
+        state.call.call_id !==
+            data.call_id
+    ) {
+
+        return;
 
     }
 
 
-    /* ICE */
+    try {
 
-    state.pc.onicecandidate =
-        (event) => {
+        const pc =
+            createPeerConnection();
 
-            if (
-                event.candidate &&
-                state.call &&
-                state.socket?.connected
-            ) {
 
-                state.socket.emit(
-                    "webrtc:ice",
-                    {
-                        call_id:
-                            state.call.call_id,
+        if (state.localStream) {
 
-                        candidate:
-                            event.candidate
+            state.localStream
+                .getTracks()
+                .forEach(
+                    (track) => {
+
+                        pc.addTrack(
+                            track,
+                            state.localStream
+                        );
+
                     }
                 );
 
-            }
-
-        };
+        }
 
 
-    /* REMOTE TRACK */
+        await makeOffer();
 
-    state.pc.ontrack =
-        (event) => {
+    } catch (error) {
 
-            const video =
-                $("#remote-video");
-
-
-            if (
-                event.streams &&
-                event.streams[0]
-            ) {
-
-                video.srcObject =
-                    event.streams[0];
-
-            }
+        console.error(
+            "Call accepted error:",
+            error
+        );
 
 
-            $("#call-status")
-                .textContent =
-                "Connected";
+        showToast(
+            "Call start nahi ho saki.",
+            "error"
+        );
 
-
-            if (
-                state.call &&
-                state.call.call_type ===
-                    "video"
-            ) {
-
-                $("#local-video")
-                    .srcObject =
-                    state.localStream;
-
-
-                $("#remote-video-wrap")
-                    .classList
-                    .remove("hidden");
-
-            }
-
-        };
-
-
-    /* CONNECTION STATE */
-
-    state.pc.onconnectionstatechange =
-        () => {
-
-            if (!state.pc) {
-
-                return;
-
-            }
-
-
-            const connectionState =
-                state.pc
-                    .connectionState;
-
-
-            if (
-                connectionState ===
-                "connected"
-            ) {
-
-                $("#call-status")
-                    .textContent =
-                    "Connected";
-
-            }
-
-
-            if (
-                connectionState ===
-                    "failed" ||
-                connectionState ===
-                    "disconnected"
-            ) {
-
-                $("#call-status")
-                    .textContent =
-                    "Connection ended";
-
-            }
-
-        };
-
-
-    return state.pc;
+    }
 
 }
 
@@ -3024,34 +2032,289 @@ async function createPeerConnection() {
 
 async function makeOffer() {
 
-    if (!state.pc || !state.call) {
+    if (
+        !state.pc ||
+        !state.call ||
+        !state.socket ||
+        !state.socket.connected
+    ) {
 
         return;
 
     }
 
 
-    const offer =
+    try {
+
+        const offer =
+            await state.pc
+                .createOffer();
+
+
         await state.pc
-            .createOffer();
+            .setLocalDescription(
+                offer
+            );
 
 
-    await state.pc
-        .setLocalDescription(
-            offer
+        state.socket.emit(
+            "webrtc:offer",
+            {
+
+                call_id:
+                    state.call.call_id,
+
+                offer:
+                    state.pc
+                        .localDescription
+
+            }
         );
 
 
-    state.socket.emit(
-        "webrtc:offer",
-        {
-            call_id:
-                state.call.call_id,
+    } catch (error) {
 
-            offer:
-                state.pc.localDescription
+        console.error(
+            "Create offer error:",
+            error
+        );
+
+    }
+
+}
+
+
+/* =========================================================
+   HANDLE WEBRTC OFFER
+========================================================= */
+
+async function handleWebRTCOffer(
+    data
+) {
+
+    if (
+        !data ||
+        !state.call ||
+        !state.socket ||
+        !state.socket.connected
+    ) {
+
+        return;
+
+    }
+
+
+    if (
+        state.call.call_id !==
+        data.call_id
+    ) {
+
+        return;
+
+    }
+
+
+    try {
+
+        if (!state.pc) {
+
+            createPeerConnection();
+
         }
-    );
+
+
+        if (
+            state.localStream &&
+            state.pc.getSenders().length ===
+                0
+        ) {
+
+            state.localStream
+                .getTracks()
+                .forEach(
+                    (track) => {
+
+                        state.pc.addTrack(
+                            track,
+                            state.localStream
+                        );
+
+                    }
+                );
+
+        }
+
+
+        await state.pc
+            .setRemoteDescription(
+                new RTCSessionDescription(
+                    data.offer
+                )
+            );
+
+
+        await flushCandidates();
+
+
+        const answer =
+            await state.pc
+                .createAnswer();
+
+
+        await state.pc
+            .setLocalDescription(
+                answer
+            );
+
+
+        state.socket.emit(
+            "webrtc:answer",
+            {
+
+                call_id:
+                    state.call.call_id,
+
+                answer:
+                    state.pc
+                        .localDescription
+
+            }
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "WebRTC offer error:",
+            error
+        );
+
+
+        showToast(
+            "WebRTC offer failed.",
+            "error"
+        );
+
+    }
+
+}
+
+
+/* =========================================================
+   HANDLE WEBRTC ANSWER
+========================================================= */
+
+async function handleWebRTCAnswer(
+    data
+) {
+
+    if (
+        !state.pc ||
+        !state.call
+    ) {
+
+        return;
+
+    }
+
+
+    if (
+        state.call.call_id !==
+        data.call_id
+    ) {
+
+        return;
+
+    }
+
+
+    try {
+
+        await state.pc
+            .setRemoteDescription(
+                new RTCSessionDescription(
+                    data.answer
+                )
+            );
+
+
+        await flushCandidates();
+
+
+    } catch (error) {
+
+        console.error(
+            "WebRTC answer error:",
+            error
+        );
+
+
+        showToast(
+            "WebRTC answer failed.",
+            "error"
+        );
+
+    }
+
+}
+
+
+/* =========================================================
+   HANDLE WEBRTC ICE
+========================================================= */
+
+async function handleWebRTCIce(
+    data
+) {
+
+    if (
+        !state.call ||
+        !data ||
+        state.call.call_id !==
+            data.call_id ||
+        !data.candidate
+    ) {
+
+        return;
+
+    }
+
+
+    try {
+
+        const candidate =
+            new RTCIceCandidate(
+                data.candidate
+            );
+
+
+        if (
+            state.pc &&
+            state.pc.remoteDescription
+        ) {
+
+            await state.pc
+                .addIceCandidate(
+                    candidate
+                );
+
+        } else {
+
+            state.pendingCandidates
+                .push(
+                    candidate
+                );
+
+        }
+
+    } catch (error) {
+
+        console.warn(
+            "ICE candidate error:",
+            error
+        );
+
+    }
 
 }
 
@@ -3073,13 +2336,17 @@ async function flushCandidates() {
 
 
     const candidates =
-        state.pendingCandidates
-            .splice(0);
+        [
+            ...state.pendingCandidates
+        ];
+
+
+    state.pendingCandidates =
+        [];
 
 
     for (
-        const candidate
-        of candidates
+        const candidate of candidates
     ) {
 
         try {
@@ -3092,7 +2359,7 @@ async function flushCandidates() {
         } catch (error) {
 
             console.warn(
-                "Could not add ICE candidate:",
+                "ICE flush error:",
                 error
             );
 
@@ -3104,22 +2371,86 @@ async function flushCandidates() {
 
 
 /* =========================================================
-   END CALL LOCALLY
+   CALL REJECTED
+========================================================= */
+
+function handleCallRejected(
+    data
+) {
+
+    console.log(
+        "Call rejected:",
+        data
+    );
+
+
+    showToast(
+        "Call rejected.",
+        "error"
+    );
+
+
+    endCallLocal();
+
+}
+
+
+/* =========================================================
+   CALL ENDED
+========================================================= */
+
+function handleCallEnded(
+    data
+) {
+
+    console.log(
+        "Call ended:",
+        data
+    );
+
+
+    endCallLocal();
+
+}
+
+
+/* =========================================================
+   END CALL LOCAL
 ========================================================= */
 
 function endCallLocal() {
 
-    if (state.localStream) {
+    if (
+        state.localStream
+    ) {
 
         state.localStream
             .getTracks()
-            .forEach((track) => {
+            .forEach(
+                (track) => {
 
-                track.stop();
+                    try {
 
-            });
+                        track.stop();
+
+                    } catch {
+
+                        // Ignore
+
+                    }
+
+                }
+            );
 
     }
+
+
+    state.localStream =
+        null;
+
+
+    state.remoteStream =
+        null;
 
 
     if (state.pc) {
@@ -3130,15 +2461,11 @@ function endCallLocal() {
 
         } catch {
 
-            // Ignore close errors.
+            // Ignore
 
         }
 
     }
-
-
-    state.localStream =
-        null;
 
 
     state.pc =
@@ -3149,94 +2476,1229 @@ function endCallLocal() {
         [];
 
 
-    if ($("#remote-video")) {
-
-        $("#remote-video")
-            .srcObject =
-            null;
-
-    }
-
-
-    if ($("#local-video")) {
-
-        $("#local-video")
-            .srcObject =
-            null;
-
-    }
-
-
-    $("#call-modal")
-        .classList
-        .add("hidden");
-
-
     state.call =
         null;
+
+
+    state.incomingCall =
+        null;
+
+
+    const localVideo =
+        $("#local-video");
+
+
+    if (localVideo) {
+
+        localVideo.srcObject =
+            null;
+
+    }
+
+
+    const remoteVideo =
+        $("#remote-video");
+
+
+    if (remoteVideo) {
+
+        remoteVideo.srcObject =
+            null;
+
+    }
+
+
+    hideCallUI();
 
 }
 
 
 /* =========================================================
-   CLOSE SEARCH WHEN CLICKING OUTSIDE
+   END CALL
 ========================================================= */
 
-document.addEventListener(
-    "click",
-    (event) => {
+function endCall() {
 
-        const searchBox =
-            $(".search-box");
+    if (
+        state.socket &&
+        state.socket.connected &&
+        state.call
+    ) {
+
+        state.socket.emit(
+            "call:end",
+            {
+
+                call_id:
+                    state.call.call_id
+
+            }
+        );
+
+    }
 
 
-        const results =
-            $("#search-results");
+    endCallLocal();
+
+}
+
+
+/* =========================================================
+   SHOW CALL UI
+========================================================= */
+
+function showCallUI(
+    type,
+    incoming = false
+) {
+
+    const modal =
+        $("#call-modal");
+
+
+    if (modal) {
+
+        modal.classList.remove(
+            "hidden"
+        );
+
+    }
+
+
+    const status =
+        $("#call-status");
+
+
+    if (status) {
+
+        status.textContent =
+            incoming
+                ? "Incoming call..."
+                : `${type === "video" ? "Video" : "Voice"} call...`;
+
+    }
+
+}
+
+
+/* =========================================================
+   HIDE CALL UI
+========================================================= */
+
+function hideCallUI() {
+
+    const modal =
+        $("#call-modal");
+
+
+    if (modal) {
+
+        modal.classList.add(
+            "hidden"
+        );
+
+    }
+
+}
+
+
+/* =========================================================
+   INCOMING CALL UI
+========================================================= */
+
+function showIncomingCallUI(
+    data
+) {
+
+    showCallUI(
+        data.call_type ||
+            "voice",
+        true
+    );
+
+
+    const name =
+        $("#incoming-call-name");
+
+
+    if (name) {
+
+        name.textContent =
+            data.caller_name ||
+            "Incoming call";
+
+    }
+
+
+    const accept =
+        $("#accept-call-btn");
+
+
+    if (accept) {
+
+        accept.onclick =
+            () => {
+
+                acceptCall();
+
+            };
+
+    }
+
+
+    const reject =
+        $("#reject-call-btn");
+
+
+    if (reject) {
+
+        reject.onclick =
+            () => {
+
+                rejectCall();
+
+            };
+
+    }
+
+}
+
+
+/* =========================================================
+   CALL BUTTONS
+========================================================= */
+
+function initializeCallButtons() {
+
+    const voiceButton =
+        $("#voice-call-btn");
+
+
+    if (voiceButton) {
+
+        voiceButton.addEventListener(
+            "click",
+            () => {
+
+                startCall(
+                    "voice"
+                );
+
+            }
+        );
+
+    }
+
+
+    const videoButton =
+        $("#video-call-btn");
+
+
+    if (videoButton) {
+
+        videoButton.addEventListener(
+            "click",
+            () => {
+
+                startCall(
+                    "video"
+                );
+
+            }
+        );
+
+    }
+
+
+    const endButton =
+        $("#end-call-btn");
+
+
+    if (endButton) {
+
+        endButton.addEventListener(
+            "click",
+            () => {
+
+                endCall();
+
+            }
+        );
+
+    }
+
+}
+
+
+/* =========================================================
+   LOAD CHATS
+========================================================= */
+
+async function loadChats() {
+
+    try {
+
+        const data =
+            await api(
+                "/api/chats"
+            );
+
+
+        state.chats =
+            Array.isArray(
+                data.chats
+            )
+                ? data.chats
+                : [];
+
+
+        renderChatList();
+
+    } catch (error) {
+
+        console.error(
+            "Load chats error:",
+            error
+        );
+
+
+        showToast(
+            error.message,
+            "error"
+        );
+
+    }
+
+}
+
+
+/* =========================================================
+   LOAD MESSAGES
+========================================================= */
+
+async function loadMessages(
+    conversationId
+) {
+
+    if (!conversationId) {
+        return;
+    }
+
+
+    try {
+
+        const data =
+            await api(
+                `/api/messages/${encodeURIComponent(
+                    conversationId
+                )}`
+            );
+
+
+        const messages =
+            Array.isArray(
+                data.messages
+            )
+                ? data.messages
+                : [];
+
+
+        state.messages.set(
+            conversationId,
+            messages
+        );
+
+
+        renderMessages();
+
+
+    } catch (error) {
+
+        console.error(
+            "Load messages error:",
+            error
+        );
+
+
+        showToast(
+            error.message,
+            "error"
+        );
+
+    }
+
+}
+
+
+/* =========================================================
+   RENDER CHAT LIST
+========================================================= */
+
+function renderChatList() {
+
+    const element =
+        $("#chat-list");
+
+
+    if (!element) {
+        return;
+    }
+
+
+    if (!state.chats.length) {
+
+        element.innerHTML = `
+            <div
+                class="muted"
+                style="
+                    padding:24px;
+                    text-align:center;
+                    line-height:1.6;
+                "
+            >
+                No chats yet.<br>
+                Search a username above.
+            </div>
+        `;
+
+        return;
+
+    }
+
+
+    element.innerHTML =
+        state.chats
+            .map(
+                (chat) => {
+
+                    const active =
+                        state.activeChat &&
+                        state.activeChat
+                            .conversation_id ===
+                        chat.conversation_id;
+
+
+                    const last =
+                        chat.last_message;
+
+
+                    const user =
+                        chat.user || {};
+
+
+                    return `
+                        <div
+                            class="chat-item ${
+                                active
+                                    ? "active"
+                                    : ""
+                            }"
+                            data-id="${
+                                escapeHtml(
+                                    chat.conversation_id
+                                )
+                            }"
+                        >
+
+                            <img
+                                class="avatar"
+                                src="${escapeHtml(
+                                    avatarUrl(
+                                        user
+                                    )
+                                )}"
+                                alt=""
+                            >
+
+                            <div class="chat-meta">
+
+                                <div class="chat-top">
+
+                                    <span
+                                        class="chat-name"
+                                    >
+                                        ${escapeHtml(
+                                            user.display_name ||
+                                            user.username ||
+                                            "User"
+                                        )}
+                                    </span>
+
+                                    <span
+                                        class="chat-time"
+                                    >
+                                        ${
+                                            last
+                                                ? formatTime(
+                                                    last.created_at
+                                                )
+                                                : ""
+                                        }
+                                    </span>
+
+                                </div>
+
+                                <div
+                                    class="chat-preview"
+                                >
+                                    ${
+                                        last
+                                            ? escapeHtml(
+                                                last.message
+                                            )
+                                            : "Start chatting"
+                                    }
+                                </div>
+
+                            </div>
+
+                            ${
+                                chat.unread_count
+                                    ? `
+                                        <span
+                                            class="badge"
+                                        >
+                                            ${
+                                                chat.unread_count >
+                                                99
+                                                    ? "99+"
+                                                    : chat.unread_count
+                                            }
+                                        </span>
+                                    `
+                                    : ""
+                            }
+
+                        </div>
+                    `;
+
+                }
+            )
+            .join("");
+
+
+    element
+        .querySelectorAll(
+            ".chat-item"
+        )
+        .forEach(
+            (item) => {
+
+                item.addEventListener(
+                    "click",
+                    () => {
+
+                        const id =
+                            item.dataset.id;
+
+
+                        openChat(
+                            id
+                        );
+
+                    }
+                );
+
+            }
+        );
+
+}
+
+
+/* =========================================================
+   OPEN CHAT
+========================================================= */
+
+async function openChat(
+    conversationId
+) {
+
+    const chat =
+        state.chats.find(
+            (item) =>
+                String(
+                    item.conversation_id
+                ) ===
+                String(
+                    conversationId
+                )
+        );
+
+
+    if (!chat) {
+
+        console.warn(
+            "Chat not found:",
+            conversationId
+        );
+
+        return;
+
+    }
+
+
+    state.activeChat =
+        chat;
+
+
+    renderChatList();
+
+    renderChatHeader();
+
+
+    const appView =
+        $("#app-view");
+
+
+    if (appView) {
+
+        appView.classList.add(
+            "chat-open"
+        );
+
+    }
+
+
+    const activeChat =
+        $("#active-chat");
+
+
+    if (activeChat) {
+
+        activeChat.classList.remove(
+            "hidden"
+        );
+
+    }
+
+
+    const emptyChat =
+        $("#empty-chat");
+
+
+    if (emptyChat) {
+
+        emptyChat.classList.add(
+            "hidden"
+        );
+
+    }
+
+
+    await loadMessages(
+        chat.conversation_id
+    );
+
+
+    markRead();
+
+}
+
+
+/* =========================================================
+   RENDER CHAT HEADER
+========================================================= */
+
+function renderChatHeader() {
+
+    if (!state.activeChat) {
+        return;
+    }
+
+
+    const user =
+        state.activeChat.user || {};
+
+
+    const name =
+        $("#chat-header-name");
+
+
+    if (name) {
+
+        name.textContent =
+            user.display_name ||
+            user.username ||
+            "User";
+
+    }
+
+
+    const avatar =
+        $("#chat-header-avatar");
+
+
+    if (avatar) {
+
+        avatar.src =
+            avatarUrl(
+                user
+            );
+
+    }
+
+
+    const status =
+        $("#chat-header-status");
+
+
+    if (status) {
+
+        if (user.online) {
+
+            status.textContent =
+                "Online";
+
+        } else {
+
+            status.textContent =
+                user.last_seen
+                    ? `Last seen ${formatDate(
+                        user.last_seen
+                    )}`
+                    : "Offline";
+
+        }
+
+    }
+
+}
+
+
+/* =========================================================
+   RENDER MESSAGES
+========================================================= */
+
+function renderMessages() {
+
+    if (!state.activeChat) {
+        return;
+    }
+
+
+    const container =
+        $("#messages");
+
+
+    if (!container) {
+        return;
+    }
+
+
+    const list =
+        state.messages.get(
+            state.activeChat
+                .conversation_id
+        ) || [];
+
+
+    if (!list.length) {
+
+        container.innerHTML = `
+            <div
+                class="muted"
+                style="
+                    text-align:center;
+                    padding:30px;
+                "
+            >
+                No messages yet.
+            </div>
+        `;
+
+        return;
+
+    }
+
+
+    container.innerHTML =
+        list
+            .map(
+                (message) => {
+
+                    const mine =
+                        String(
+                            message.sender_id
+                        ) ===
+                        String(
+                            state.me?.id
+                        );
+
+
+                    let tick =
+                        "✓";
+
+
+                    if (
+                        message.read_at
+                    ) {
+
+                        tick =
+                            "✓✓";
+
+                    } else if (
+                        message.delivered_at
+                    ) {
+
+                        tick =
+                            "✓✓";
+
+                    }
+
+
+                    return `
+                        <div
+                            class="message-row ${
+                                mine
+                                    ? "sent"
+                                    : "received"
+                            }"
+                        >
+
+                            <div
+                                class="message-bubble"
+                            >
+
+                                <div
+                                    class="message-text"
+                                >
+                                    ${escapeHtml(
+                                        message.message
+                                    )}
+                                </div>
+
+                                <div
+                                    class="message-time"
+                                >
+
+                                    ${formatTime(
+                                        message.created_at
+                                    )}
+
+                                    ${
+                                        mine
+                                            ? `
+                                                <span
+                                                    class="${
+                                                        message.read_at
+                                                            ? "read"
+                                                            : ""
+                                                    }"
+                                                >
+                                                    ${tick}
+                                                </span>
+                                            `
+                                            : ""
+                                    }
+
+                                </div>
+
+                            </div>
+
+                        </div>
+                    `;
+
+                }
+            )
+            .join("");
+
+
+    container.scrollTop =
+        container.scrollHeight;
+
+}
+
+
+/* =========================================================
+   SEARCH USER
+========================================================= */
+
+async function searchUsers(
+    query
+) {
+
+    const text =
+        String(
+            query || ""
+        ).trim();
+
+
+    if (!text) {
+        return [];
+    }
+
+
+    try {
+
+        const data =
+            await api(
+                `/api/users/search?q=${encodeURIComponent(
+                    text
+                )}`
+            );
+
+
+        return Array.isArray(
+            data.users
+        )
+            ? data.users
+            : [];
+
+    } catch (error) {
+
+        console.error(
+            "Search users error:",
+            error
+        );
+
+
+        showToast(
+            error.message,
+            "error"
+        );
+
+
+        return [];
+
+    }
+
+}
+
+
+/* =========================================================
+   SEARCH UI
+========================================================= */
+
+function initializeSearch() {
+
+    const input =
+        $("#search-input");
+
+
+    if (!input) {
+        return;
+    }
+
+
+    let timer =
+        null;
+
+
+    input.addEventListener(
+        "input",
+        () => {
+
+            clearTimeout(
+                timer
+            );
+
+
+            timer =
+                setTimeout(
+                    async () => {
+
+                        const users =
+                            await searchUsers(
+                                input.value
+                            );
+
+
+                        renderSearchResults(
+                            users
+                        );
+
+                    },
+                    300
+                );
+
+        }
+    );
+
+}
+
+
+/* =========================================================
+   RENDER SEARCH RESULTS
+========================================================= */
+
+function renderSearchResults(
+    users
+) {
+
+    const container =
+        $("#search-results");
+
+
+    if (!container) {
+        return;
+    }
+
+
+    if (!users.length) {
+
+        container.innerHTML =
+            "";
+
+        return;
+
+    }
+
+
+    container.innerHTML =
+        users
+            .map(
+                (user) => `
+
+                    <div
+                        class="search-result"
+                        data-user-id="${
+                            escapeHtml(
+                                user.id
+                            )
+                        }"
+                    >
+
+                        <img
+                            class="avatar"
+                            src="${escapeHtml(
+                                avatarUrl(
+                                    user
+                                )
+                            )}"
+                            alt=""
+                        >
+
+                        <div>
+
+                            <div>
+                                ${escapeHtml(
+                                    user.display_name ||
+                                    user.username ||
+                                    "User"
+                                )}
+                            </div>
+
+                            <small>
+                                @${escapeHtml(
+                                    user.username ||
+                                    ""
+                                )}
+                            </small>
+
+                        </div>
+
+                    </div>
+
+                `
+            )
+            .join("");
+
+
+    container
+        .querySelectorAll(
+            ".search-result"
+        )
+        .forEach(
+            (element) => {
+
+                element.addEventListener(
+                    "click",
+                    () => {
+
+                        const userId =
+                            element.dataset
+                                .userId;
+
+
+                        startNewChat(
+                            userId
+                        );
+
+                    }
+                );
+
+            }
+        );
+
+}
+
+
+/* =========================================================
+   START NEW CHAT
+========================================================= */
+
+async function startNewChat(
+    userId
+) {
+
+    if (!userId) {
+        return;
+    }
+
+
+    try {
+
+        const data =
+            await api(
+                "/api/chats",
+                {
+
+                    method:
+                        "POST",
+
+                    body:
+                        JSON.stringify(
+                            {
+                                user_id:
+                                    userId
+                            }
+                        )
+
+                }
+            );
 
 
         if (
-            searchBox &&
-            results &&
-            !searchBox.contains(event.target) &&
-            !results.contains(event.target)
+            data.chat
         ) {
 
-            results.classList.add(
-                "hidden"
+            const existing =
+                state.chats.find(
+                    (chat) =>
+                        chat.conversation_id ===
+                        data.chat
+                            .conversation_id
+                );
+
+
+            if (!existing) {
+
+                state.chats.unshift(
+                    data.chat
+                );
+
+            }
+
+
+            renderChatList();
+
+
+            await openChat(
+                data.chat
+                    .conversation_id
             );
 
         }
 
+
+    } catch (error) {
+
+        console.error(
+            "Start chat error:",
+            error
+        );
+
+
+        showToast(
+            error.message,
+            "error"
+        );
+
     }
-);
+
+}
 
 
 /* =========================================================
-   ENTER KEY / ESCAPE
+   INITIALIZATION
 ========================================================= */
 
-document.addEventListener(
-    "keydown",
-    (event) => {
+async function initializeApp() {
 
-        if (
-            event.key ===
-            "Escape"
-        ) {
-
-            $("#search-results")
-                ?.classList
-                .add("hidden");
+    console.log(
+        "ChatWave initializing..."
+    );
 
 
-            $("#profile-modal")
-                ?.classList
-                .add("hidden");
+    try {
 
-        }
+        const data =
+            await api(
+                "/api/me"
+            );
+
+
+        state.me =
+            data.user ||
+            data.me ||
+            null;
+
+
+    } catch (error) {
+
+        console.error(
+            "User load error:",
+            error
+        );
 
     }
-);
+
+
+    initializeSocket();
+
+    initializeMessageForm();
+
+    initializeTyping();
+
+    initializeCallButtons();
+
+    initializeSearch();
+
+
+    try {
+
+        await loadChats();
+
+    } catch {
+
+        // Already handled
+
+    }
+
+
+    console.log(
+        "ChatWave initialized."
+    );
+
+}
+
+
+/* =========================================================
+   DOM READY
+========================================================= */
+
+if (
+    document.readyState ===
+    "loading"
+) {
+
+    document.addEventListener(
+        "DOMContentLoaded",
+        () => {
+
+            initializeApp();
+
+        },
+        {
+            once: true
+        }
+    );
+
+} else {
+
+    initializeApp();
+
+}
 
 
 /* =========================================================
@@ -3247,9 +3709,28 @@ window.addEventListener(
     "beforeunload",
     () => {
 
+        try {
+
+            endCallLocal();
+
+        } catch {
+
+            // Ignore
+
+        }
+
+
         if (state.socket) {
 
-            state.socket.disconnect();
+            try {
+
+                state.socket.disconnect();
+
+            } catch {
+
+                // Ignore
+
+            }
 
         }
 
