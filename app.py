@@ -1,4 +1,3 @@
-```python
 import os
 import re
 import uuid
@@ -2650,4 +2649,3 @@ if __name__ == "__main__":
         debug=not IS_PRODUCTION,
         allow_unsafe_werkzeug=not IS_PRODUCTION,
     )
-```
